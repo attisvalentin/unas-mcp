@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { buildXml, asArray, compact, type XmlObject } from "../unas/xml.js";
-import { jsonResult, safe } from "../util/result.js";
+import { jsonResult, safe, setResult } from "../util/result.js";
 import { summarizeOrder } from "../util/summaries.js";
 import { dateInput, dryRunInput, READ_ONLY, unixOrUndefined, WRITE, type ToolContext } from "./context.js";
 
@@ -167,7 +167,7 @@ export function registerOrderTools(ctx: ToolContext) {
       const body = { Order: [order] };
       if (a.dryRun) return jsonResult({ dryRun: true, endpoint: "setOrder", xml: buildXml("Orders", body) }, config.maxOutputChars);
       const doc = await client.call("setOrder", "Orders", body, { kind: "single" });
-      return jsonResult(doc, config.maxOutputChars);
+      return setResult(doc, config.maxOutputChars);
     })
   );
 }

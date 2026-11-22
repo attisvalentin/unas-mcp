@@ -83,6 +83,36 @@ function cutWrapped(full: string, maxChars: number): string {
   return out;
 }
 
+/**
+ * Items a set* call reported as failed. UNAS answers set calls with HTTP 200 and a per-item
+ * <Status>ok|error</Status> (+ <Error>), e.g. <Orders><Order><Action/><Id/><Status>error</Status><Error/></Order></Orders>.
+ */
+export function failedItems(doc: unknown): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const visit = (node: unknown, depth: number) => {
+    if (depth > 3 || node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) return node.forEach((x) => visit(x, depth));
+    const obj = node as Record<string, unknown>;
+    if (typeof obj.Status === "string" && obj.Status.toLowerCase() === "error") {
+      out.push(obj);
+      return;
+    }
+    for (const v of Object.values(obj)) visit(v, depth + 1);
+  };
+  visit(doc, 0);
+  return out;
+}
+
+/** Result of a set* call: marked as an error when any item failed, so the model cannot miss it. */
+export function setResult(doc: unknown, maxChars: number): CallToolResult {
+  const failed = failedItems(doc);
+  if (failed.length === 0) return jsonResult(doc, maxChars);
+  return {
+    ...jsonResult({ ok: false, failedCount: failed.length, failed, response: doc }, maxChars),
+    isError: true,
+  };
+}
+
 export function errorResult(err: unknown): CallToolResult {
   const message =
     err instanceof UnasError || err instanceof Error ? err.message : `Unexpected error: ${String(err)}`;

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { GET_ENDPOINTS, SET_ENDPOINTS } from "../unas/limits.js";
 import { buildXml, type XmlObject } from "../unas/xml.js";
-import { jsonResult, safe } from "../util/result.js";
+import { jsonResult, safe, setResult } from "../util/result.js";
 import { DESTRUCTIVE, READ_ONLY, type ToolContext } from "./context.js";
 
 const xmlBody = z
@@ -70,6 +70,13 @@ export function registerSystemTools(ctx: ToolContext) {
       annotations: { title: "Raw UNAS get request", ...READ_ONLY },
     },
     safe(async (a) => {
+      // getOrder with InvoiceAutoSet marks every returned order as invoiced: a write hidden in a read call.
+      if (a.endpoint === "getOrder" && Object.keys(a.params).some((k) => k.toLowerCase() === "invoiceautoset")) {
+        throw new Error(
+          "InvoiceAutoSet is not allowed here: it marks all returned orders as invoiced. " +
+            "Use unas_update_order with invoice.status = \"2\" for the specific orders instead."
+        );
+      }
       const doc = await client.call(a.endpoint, "Params", a.params as XmlObject, { kind: a.single ? "single" : "bulk" });
       return jsonResult(doc, config.maxOutputChars);
     })
@@ -108,7 +115,7 @@ export function registerSystemTools(ctx: ToolContext) {
         kind: a.entityCount > 100 ? "bulk" : "single",
       });
       client.invalidateCache(a.endpoint.replace(/^set/, "get"));
-      return jsonResult(doc, config.maxOutputChars);
+      return setResult(doc, config.maxOutputChars);
     })
   );
 }

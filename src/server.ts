@@ -18,10 +18,13 @@ Key facts:
 - UNAS strictly rate limits LIST queries (e.g. 30/hour on PREMIUM) and bans the IP for 1 hour if exceeded,
   or after 20 consecutive failed calls. Single lookups (order by key, product/stock by one SKU) are cheap.
   Prefer narrow date ranges and one larger page over many small pages; check unas_rate_limit_status if unsure.
+  Repeated bans escalate (1 day, 1 month, 1 year), so never retry into a limit or ban.
+- UNAS may run maintenance around midnight (±10 min, shop time); avoid starting calls then.
 - Dates without a time zone are interpreted in the shop's time zone.
 - Write tools change the live shop. Summarise the intended change and get the user's confirmation before
   calling them; use dryRun to show exactly what would be sent.
-- In UNAS set calls, an omitted field is left unchanged and an empty field clears the stored value.`;
+- In UNAS set calls, an omitted field is left unchanged and an empty field clears the stored value.
+- Set calls can partly fail: a tool result marked as an error lists the failed items; report them to the user.`;
 
 export function createServer(config: UnasConfig, client = new UnasClient(config)) {
   const server = new McpServer(

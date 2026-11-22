@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { asArray, buildXml, compact, type XmlObject } from "../unas/xml.js";
-import { jsonResult, safe } from "../util/result.js";
+import { failedItems, jsonResult, safe } from "../util/result.js";
 import { dateInput, dryRunInput, READ_ONLY, unixOrUndefined, WRITE, type ToolContext } from "./context.js";
 
 const CHUNK = 100; // setStock calls with <= 100 products use the generous limit
@@ -124,6 +124,13 @@ export function registerStockTools(ctx: ToolContext) {
             config.maxOutputChars
           );
         }
+      }
+      const failed = failedItems(results);
+      if (failed.length > 0) {
+        return {
+          ...jsonResult({ ok: false, failedCount: failed.length, failed, results }, config.maxOutputChars),
+          isError: true,
+        };
       }
       return jsonResult({ ok: true, results }, config.maxOutputChars);
     })

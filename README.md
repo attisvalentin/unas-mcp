@@ -7,6 +7,9 @@ Az UNAS API XML-alapú, és a limitjei szigorúak. Ha egy listázó hívást tú
 - **Token kezelés:** csak egyszer jelentkezik be. A token 2 óráig érvényes, lejárat előtt 5 perccel frissíti, és ha a token hibás, egyszer automatikusan újra bejelentkezik.
 - **Helyi rate limit:** minden végponthoz külön számolja a hívásokat egy órás csúszó ablakban, külön az egyedi (`single`) és a listázó (`bulk`) hívásokat, plusz egy globális számlálót. Az előfizetéshez dokumentált limitnek alapból csak a 90%-áig enged elmenni.
 - **Hibavédelem:** ha egy végpont 15-ször egymás után hibára fut, a szerver leállítja a hívásait, mielőtt az UNAS 20 hibánál letiltaná az IP-t.
+- **Hibás API kulcs védelem:** 10 perc alatt 3 sikertelen azonosítás után a szerver szünetelteti a bejelentkezést. Az UNAS 10 ilyen hívás után 2 órára az összes webáruház API-ját letiltja az adott IP-ről.
+- **Párhuzamosság:** egyszerre legfeljebb 4 kérést küld (az UNAS 5-öt enged).
+- **Részleges hibák:** ha egy set hívásban valamelyik tétel `Status=error` választ kap, az eszköz hibaként jelzi, és felsorolja a hibás tételeket.
 - **Tiltás felismerése:** ha jön egy `IP is banned till …` válasz, a végpontot a tiltás lejártáig nem hívja újra.
 - **Cache:** a ritkán változó törzsadatokat (státuszok, fizetési és szállítási módok, kategóriák) 10 percig tárolja.
 - **Tömörített kimenet:** a listák alapból rövid összefoglalót adnak, hogy kevesebb tokent használjanak. A teljes UNAS struktúrához add meg a `detail="full"` paramétert.
@@ -40,7 +43,7 @@ A ✎ és ⚠ jelű eszközök read-only módban nem jelennek meg.
 ```bash
 npm install
 npm run build
-npm test        # 18 teszt egy mock UNAS API ellen
+npm test        # 22 teszt egy mock UNAS API ellen
 ```
 
 API kulcsot az UNAS adminban a **Beállítások → Külső kapcsolatok → API kapcsolat** menüben tudsz létrehozni. Ott azt is beállíthatod, hogy a kulcs mely végpontokat érheti el. Az API csak PREMIUM és VIP csomaggal használható.
@@ -83,10 +86,13 @@ Kipróbálni MCP Inspectorral tudod: `UNAS_API_KEY=... npm run inspect`
 | `UNAS_CACHE_TTL_SECONDS` | `600` | Cache idő a törzsadatokhoz |
 | `UNAS_TIMEOUT_MS` | `60000` | HTTP timeout |
 | `UNAS_MAX_OUTPUT_CHARS` | `80000` | Efölött az eszköz levágja a választ |
+| `UNAS_MAX_CONCURRENCY` | `4` | Párhuzamos kérések száma (1–5) |
 | `UNAS_BASE_URL` | `https://api.unas.eu/shop/` | Az API alap URL-je |
 
 ## Fontos tudnivalók a limitekről
 
+- Limitsértésnél a tiltás 1 óra, ismételt sértésnél egyre hosszabb (1 nap, 1 hónap, 1 év).
+- Éjfél körül (±10 perc) az UNAS karbantartást végezhet, ekkor ne fusson hívás.
 - A **listázó** lekérések szűkösek: getOrder, getProduct, getStock, getCategory és getCustomer esetén PREMIUM csomagban **30 hívás/óra**, VIP-ben 90. Az egyedi lekérések (Key, Id vagy egy SKU alapján) 1000, illetve 3000 hívás/óra.
 - Ezért jobb egy szűk időablakot egy nagyobb `limit` értékkel lekérni (getOrder esetén legfeljebb 500), mint sok kis oldalt lapozni.
 - A limitek **IP címre és boltra** vonatkoznak. Ha ugyanarról az IP-ről más integráció is hívja az API-t, azt a szerver nem látja.

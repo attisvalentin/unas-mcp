@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { asArray, buildXml, compact, type XmlObject } from "../unas/xml.js";
-import { jsonResult, safe } from "../util/result.js";
+import { jsonResult, safe, setResult } from "../util/result.js";
 import { summarizeProduct } from "../util/summaries.js";
 import { dateInput, DESTRUCTIVE, dryRunInput, READ_ONLY, unixOrUndefined, WRITE, type ToolContext } from "./context.js";
 
@@ -194,7 +194,7 @@ export function registerProductTools(ctx: ToolContext) {
       const doc = await client.call("setProduct", "Products", body, { kind: "single" });
       // A category path (categoryName or extra.Categories) can create new categories on the fly.
       client.invalidateCache("getCategory");
-      return jsonResult(doc, config.maxOutputChars);
+      return setResult(doc, config.maxOutputChars);
     })
   );
 
@@ -230,7 +230,7 @@ export function registerProductTools(ctx: ToolContext) {
       const doc = await client.call("setProduct", "Products", body, { kind: "single" });
       // A category path (categoryName or extra.Categories) can create new categories on the fly.
       client.invalidateCache("getCategory");
-      return jsonResult(doc, config.maxOutputChars);
+      return setResult(doc, config.maxOutputChars);
     })
   );
 
@@ -254,7 +254,7 @@ export function registerProductTools(ctx: ToolContext) {
       const doc = await client.call("setProduct", "Products", body, { kind: "single" });
       // A category path (categoryName or extra.Categories) can create new categories on the fly.
       client.invalidateCache("getCategory");
-      return jsonResult(doc, config.maxOutputChars);
+      return setResult(doc, config.maxOutputChars);
     })
   );
 }

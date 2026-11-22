@@ -1,5 +1,12 @@
 import type { UnasConfig } from "../config.js";
-import { UnasApiError, UnasBanError, UnasError, UnasFailureGuardError, UnasRateLimitError } from "./errors.js";
+import {
+  UnasApiError,
+  UnasAuthGuardError,
+  UnasBanError,
+  UnasError,
+  UnasFailureGuardError,
+  UnasRateLimitError,
+} from "./errors.js";
 import { zonedToUtc } from "../util/dates.js";
 import { GLOBAL_LIMIT, LOGIN_LIMIT, limitsFor } from "./limits.js";
 import { asArray, buildXml, parseXml, type XmlObject } from "./xml.js";
@@ -8,6 +15,9 @@ type FetchLike = typeof fetch;
 
 const HOUR_MS = 60 * 60 * 1000;
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+/** UNAS bans the IP for all webshops (2 h) after 10 unidentifiable calls in 10 minutes; we stop well before. */
+const AUTH_WINDOW_MS = 10 * 60 * 1000;
+const AUTH_FAILURE_LIMIT = 3;
 
 export interface LoginInfo {
   token: string;
@@ -68,6 +78,9 @@ export class UnasClient {
   private failures = new Map<string, { count: number; last: number }>();
   private cache = new Map<string, { at: number; value: XmlObject }>();
   private bans = new Map<string, { message: string; until: number }>();
+  private authFailures: number[] = [];
+  private active = 0;
+  private waiting: Array<() => void> = [];
 
   constructor(
     readonly config: UnasConfig,
@@ -75,6 +88,35 @@ export class UnasClient {
     private now: () => number = Date.now
   ) {
     this.budget = new HourlyBudget(now);
+  }
+
+  /** Throws if too many authentication failures happened recently. */
+  private checkAuthFailures() {
+    const cutoff = this.now() - AUTH_WINDOW_MS;
+    this.authFailures = this.authFailures.filter((t) => t > cutoff);
+    if (this.authFailures.length >= AUTH_FAILURE_LIMIT) {
+      const wait = Math.max(1, Math.ceil((this.authFailures[0] + AUTH_WINDOW_MS - this.now()) / 1000));
+      throw new UnasAuthGuardError(this.authFailures.length, wait);
+    }
+  }
+
+  private noteAuthFailure() {
+    this.authFailures.push(this.now());
+  }
+
+  /** Limit parallel requests: UNAS allows at most 5 concurrent API requests per IP per webshop. */
+  private async acquireSlot() {
+    if (this.active < this.config.maxConcurrency) {
+      this.active++;
+      return;
+    }
+    await new Promise<void>((resolve) => this.waiting.push(resolve));
+  }
+
+  private releaseSlot() {
+    const next = this.waiting.shift();
+    if (next) next(); // hand the slot over directly
+    else this.active--;
   }
 
   // ---------------------------------------------------------------- auth
@@ -93,15 +135,27 @@ export class UnasClient {
     const sub = this.config.subscription;
     const ban = this.bans.get("login");
     if (ban && ban.until > this.now()) throw new UnasBanError("login", ban.message);
+    this.checkAuthFailures();
     this.reserve("login", [
       ["login", Math.floor(LOGIN_LIMIT[sub] * this.config.rateSafety)],
       ["global", Math.floor(GLOBAL_LIMIT[sub] * this.config.rateSafety)],
     ]);
     const body = buildXml("Params", { ApiKey: this.config.apiKey, WebshopInfo: "true" });
-    const doc = await this.post("login", body, undefined);
+    let doc: XmlObject;
+    try {
+      doc = await this.post("login", body, undefined);
+    } catch (err) {
+      // A rejected login is an "unidentifiable" call for UNAS; network errors and bans are not.
+      if (err instanceof UnasApiError) this.noteAuthFailure();
+      throw err;
+    }
     const root = firstObject(doc);
     const token = str(root.Token);
-    if (!token) throw new UnasApiError("login", "Login response did not contain a token", 200);
+    if (!token) {
+      this.noteAuthFailure();
+      throw new UnasApiError("login", "Login response did not contain a token", 200);
+    }
+    this.authFailures = [];
     const expireTime = Number(root.ExpireTime);
     const info: LoginInfo = {
       token,
@@ -146,6 +200,7 @@ export class UnasClient {
       ["global", Math.floor(GLOBAL_LIMIT[sub] * safety)],
     ];
     this.checkFailures(endpoint);
+    this.checkAuthFailures();
     // Reserve the budget synchronously, before any await, so concurrent calls cannot all pass the check.
     this.reserve(endpoint, buckets);
 
@@ -155,9 +210,15 @@ export class UnasClient {
       result = await this.post(endpoint, xml, login.token);
     } catch (err) {
       if (err instanceof UnasApiError && looksLikeAuthError(err)) {
+        this.noteAuthFailure();
         login = await this.getLogin(true);
         this.reserve(endpoint, buckets); // the retry is a real call and counts against the limits too
-        result = await this.post(endpoint, xml, login.token);
+        try {
+          result = await this.post(endpoint, xml, login.token);
+        } catch (retryErr) {
+          if (retryErr instanceof UnasApiError && looksLikeAuthError(retryErr)) this.noteAuthFailure();
+          throw retryErr;
+        }
       } else {
         throw err;
       }
@@ -242,6 +303,8 @@ export class UnasClient {
     if (token) headers.Authorization = `Bearer ${token}`;
 
     let res: Response;
+    let text: string;
+    await this.acquireSlot();
     try {
       res = await this.fetchImpl(this.config.baseUrl + endpoint, {
         method: "POST",
@@ -249,14 +312,16 @@ export class UnasClient {
         body: xml,
         signal: AbortSignal.timeout(this.config.requestTimeoutMs),
       });
+      text = await res.text();
     } catch (err) {
       // Network errors never reached UNAS' failure counter, but count them locally anyway.
       this.noteResult(endpoint, false);
       const msg = err instanceof Error ? err.message : String(err);
       throw new UnasError(`Network error calling UNAS ${endpoint}: ${msg}`, endpoint);
+    } finally {
+      this.releaseSlot();
     }
 
-    const text = await res.text();
     let doc: XmlObject | undefined;
     try {
       doc = text.trim() ? parseXml(text) : {};

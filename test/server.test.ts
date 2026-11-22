@@ -306,3 +306,57 @@ test("category cache: only the unfiltered tree is cached, product writes invalid
   await call("unas_list_categories", {});
   assert.equal(catCalls(), 4, "cache invalidated after setProduct");
 });
+
+test("bad API key: login pauses after 3 failed authentications (UNAS bans all shops at 10)", async () => {
+  const mock = mockUnas({
+    failWith: (ep) => (ep === "login" ? { status: 400, body: "<Error>Invalid ApiKey</Error>" } : undefined),
+  });
+  const { call } = await connect({}, mock);
+  for (let i = 0; i < 3; i++) assert.match((await call("unas_get_order", { key: "1" })).text, /Invalid ApiKey/);
+  for (let i = 0; i < 5; i++) assert.match((await call("unas_get_order", { key: "1" })).text, /failed authentications/);
+  assert.equal(mock.calls.filter((c) => c.endpoint === "login").length, 3);
+  assert.equal(mock.calls.filter((c) => c.endpoint === "getOrder").length, 0);
+});
+
+test("never more than 4 parallel requests to UNAS", async () => {
+  const base = mockUnas();
+  let active = 0;
+  let peak = 0;
+  const slow = (async (url: string | URL, init?: RequestInit) => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((r) => setTimeout(r, 20));
+    try {
+      return await base.fetchImpl(url, init);
+    } finally {
+      active--;
+    }
+  }) as typeof fetch;
+  const { call } = await connect({}, { ...base, fetchImpl: slow });
+  const results = await Promise.all(Array.from({ length: 12 }, (_, i) => call("unas_get_order", { key: String(i) })));
+  assert.ok(results.every((r) => !r.isError));
+  assert.ok(peak <= 4, `peak ${peak}`);
+  assert.ok(peak >= 2, "requests still run in parallel");
+});
+
+test("set call with a failed item is reported as an error", async () => {
+  const mock = mockUnas({
+    failWith: (ep) =>
+      ep === "setOrder"
+        ? { status: 200, body: "<Orders><Order><Action>modify</Action><Key>1</Key><Status>error</Status><Error>Unknown status</Error></Order></Orders>" }
+        : undefined,
+  });
+  const { call } = await connect({}, mock);
+  const r = await call("unas_update_order", { key: "1", status: "Nincs ilyen" });
+  assert.equal(r.isError, true);
+  assert.equal(r.json.failedCount, 1);
+  assert.equal(r.json.failed[0].Error, "Unknown status");
+});
+
+test("raw get refuses getOrder with InvoiceAutoSet (hidden write)", async () => {
+  const { call, mock } = await connect({ UNAS_READ_ONLY: "true" });
+  const r = await call("unas_raw_get", { endpoint: "getOrder", params: { InvoiceAutoSet: 1 } });
+  assert.equal(r.isError, true);
+  assert.match(r.text, /InvoiceAutoSet/);
+  assert.equal(mock.calls.length, 0);
+});

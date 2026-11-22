@@ -14,6 +14,8 @@ export interface UnasConfig {
   /** TTL for cached read-only reference data (statuses, methods, categories). */
   cacheTtlMs: number;
   maxOutputChars: number;
+  /** Max parallel HTTP requests to UNAS (UNAS allows 5 per IP per webshop). */
+  maxConcurrency: number;
 }
 
 function bool(v: string | undefined, def: boolean): boolean {
@@ -42,6 +44,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): UnasConfig {
   }
   const rateSafety = num(env.UNAS_RATE_SAFETY, 0.9);
   if (rateSafety <= 0 || rateSafety > 1) throw new Error("UNAS_RATE_SAFETY must be in (0, 1]");
+  const maxConcurrency = num(env.UNAS_MAX_CONCURRENCY, 4);
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 5) {
+    throw new Error("UNAS_MAX_CONCURRENCY must be an integer from 1 to 5 (UNAS allows 5 parallel requests)");
+  }
 
   return {
     apiKey,
@@ -54,5 +60,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): UnasConfig {
     requestTimeoutMs: num(env.UNAS_TIMEOUT_MS, 60_000),
     cacheTtlMs: num(env.UNAS_CACHE_TTL_SECONDS, 600) * 1000,
     maxOutputChars: num(env.UNAS_MAX_OUTPUT_CHARS, 80_000),
+    maxConcurrency,
   };
 }

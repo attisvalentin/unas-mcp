@@ -35,6 +35,18 @@ export class UnasRateLimitError extends UnasError {
   }
 }
 
+/** Refused locally after repeated authentication failures (UNAS bans the IP for ALL shops at 10 in 10 min). */
+export class UnasAuthGuardError extends UnasError {
+  constructor(failures: number, retryAfterSec: number) {
+    super(
+      `Local safety stop: ${failures} failed authentications in the last 10 minutes. UNAS bans the IP for ` +
+        `every webshop for 2 hours after 10 such calls, so login is paused for ~${Math.ceil(retryAfterSec / 60)} min. ` +
+        `Check UNAS_API_KEY (is it valid, not expired, and does it belong to this shop?).`,
+      "login"
+    );
+  }
+}
+
 /** Refused locally because the endpoint failed too many times in a row (UNAS bans at 20). */
 export class UnasFailureGuardError extends UnasError {
   constructor(endpoint: string, failures: number) {
