@@ -107,28 +107,38 @@ export function registerStockTools(ctx: ToolContext) {
           config.maxOutputChars
         );
       }
+      const hint = (text: string) =>
+        /stock management off/i.test(text)
+          ? "Stock management is off for this product. Enable it with unas_update_product " +
+            "(stockManaged: true) after confirming with the user, then retry."
+          : undefined;
       const results: unknown[] = [];
       for (const [idx, chunk] of chunks.entries()) {
         try {
           const doc = await client.call("setStock", "Products", { Product: chunk }, { kind: "single" });
           results.push(...asArray((doc.Products as XmlObject | undefined)?.Product));
         } catch (err) {
-          return jsonResult(
+          const result = jsonResult(
             {
               completedChunks: idx,
               totalChunks: chunks.length,
               error: err instanceof Error ? err.message : String(err),
+              hint: hint(err instanceof Error ? err.message : String(err)),
               note: "Chunks before the failing one were applied. Within the failing chunk, products before the faulty one may have been applied.",
               results,
             },
             config.maxOutputChars
           );
+          return { ...result, isError: true };
         }
       }
       const failed = failedItems(results);
       if (failed.length > 0) {
         return {
-          ...jsonResult({ ok: false, failedCount: failed.length, failed, results }, config.maxOutputChars),
+          ...jsonResult(
+            { ok: false, failedCount: failed.length, failed, hint: hint(JSON.stringify(failed)), results },
+            config.maxOutputChars
+          ),
           isError: true,
         };
       }

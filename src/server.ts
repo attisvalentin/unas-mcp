@@ -49,7 +49,7 @@ export function createServer(config: UnasConfig, client = new UnasClient(config)
       description: "Documented hourly call limits per endpoint for this subscription",
       mimeType: "text/markdown",
     },
-    async (uri) => ({ contents: [{ uri: uri.href, mimeType: "text/markdown", text: limitsMarkdown(config.subscription) }] })
+    async (uri) => ({ contents: [{ uri: uri.href, mimeType: "text/markdown", text: limitsMarkdown(client.subscription) }] })
   );
 
   server.registerResource(

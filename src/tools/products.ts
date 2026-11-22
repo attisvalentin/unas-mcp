@@ -26,7 +26,53 @@ const priceInput = z
     net: z.number().nonnegative().optional(),
     gross: z.number().nonnegative().optional(),
   })
-  .describe("Normal price. UNAS normally expects both net and gross.");
+  .describe(
+    "Normal price. UNAS expects both net and gross; if only one is given and vat is a percentage, the other is " +
+      "calculated."
+  );
+
+const vatInput = z
+  .string()
+  .regex(/^\s*\S+\s*$/, "single value such as 27%")
+  .describe(
+    "VAT key as shown in the UNAS admin, e.g. \"27%\", \"18%\", \"5%\", \"0%\" or a named key like \"AAM\". " +
+      "Omitted = the shop's default VAT on create, unchanged on update."
+  );
+
+const stockManagedInput = z
+  .boolean()
+  .describe(
+    "Enable (true) or disable (false) stock management for this product. unas_set_stock only works on products " +
+      "with stock management on. Omitted = the shop's default on create (usually off), unchanged on update."
+  );
+
+/** Percentage from a VAT key like "27%" or "27", or undefined for named keys (AAM, TAM, ...). */
+export function vatPercent(vat: string | undefined): number | undefined {
+  const m = vat?.trim().match(/^(\d+(?:[.,]\d+)?)\s*%?$/);
+  return m ? Number(m[1].replace(",", ".")) : undefined;
+}
+
+/** UNAS shows percentage keys as "27%": add the % sign to a bare number, keep named keys as they are. */
+function normalizeVat(vat: string | undefined): string | undefined {
+  if (vat === undefined) return undefined;
+  const v = vat.trim();
+  return /^\d+(?:[.,]\d+)?$/.test(v) ? `${v}%` : v;
+}
+
+const round = (n: number, digits: number) => Math.round(n * 10 ** digits) / 10 ** digits;
+
+/** Fill in the missing net or gross price from the VAT percentage (net to 4 decimals, like UNAS stores it). */
+export function completePrice(
+  price: { net?: number; gross?: number } | undefined,
+  vat: string | undefined
+): { net?: number; gross?: number } | undefined {
+  if (!price) return undefined;
+  const pct = vatPercent(vat);
+  if (pct === undefined) return price;
+  if (price.net === undefined && price.gross !== undefined) return { net: round(price.gross / (1 + pct / 100), 4), gross: price.gross };
+  if (price.gross === undefined && price.net !== undefined) return { net: price.net, gross: round(price.net * (1 + pct / 100), 2) };
+  return price;
+}
 
 /**
  * Keys the tool itself controls. Letting `extra` set them would allow e.g. {"Action":"delete"} to turn an
@@ -49,6 +95,8 @@ function productNodes(a: {
   unit?: string;
   status?: string;
   price?: { net?: number; gross?: number };
+  vat?: string;
+  stockManaged?: boolean;
   categoryId?: string;
   categoryName?: string;
   shortDescription?: string;
@@ -56,6 +104,7 @@ function productNodes(a: {
   extra?: Record<string, unknown>;
 }): XmlObject {
   checkExtra(a.extra);
+  const price = completePrice(a.price, a.vat);
   return compact({
     Statuses: a.status !== undefined ? { Status: [{ Type: "base", Value: a.status }] } : undefined,
     Name: a.name,
@@ -68,7 +117,14 @@ function productNodes(a: {
       a.categoryId !== undefined || a.categoryName !== undefined
         ? { Category: [{ Type: "base", Id: a.categoryId, Name: a.categoryName }] }
         : undefined,
-    Prices: a.price ? { Price: [{ Type: "normal", Net: a.price.net, Gross: a.price.gross }] } : undefined,
+    Prices:
+      price || a.vat !== undefined
+        ? {
+            Vat: normalizeVat(a.vat),
+            Price: price ? [{ Type: "normal", Net: price.net, Gross: price.gross }] : undefined,
+          }
+        : undefined,
+    Stocks: a.stockManaged !== undefined ? { Status: { Active: a.stockManaged ? "1" : "0" } } : undefined,
     ...((a.extra ?? {}) as XmlObject),
   });
 }
@@ -105,6 +161,10 @@ export function registerProductTools(ctx: ToolContext) {
       annotations: { title: "List products", ...READ_ONLY },
     },
     safe(async (a) => {
+      // Checked locally: UNAS rejects it anyway, and a rejected list call still burns the scarce bulk budget.
+      if (a.contentType === "custom" && !a.requestedData?.length) {
+        throw new Error("contentType=custom needs requestedData, e.g. [\"Name\",\"Prices\"].");
+      }
       const params = compact({
         StatusBase: a.statuses?.join(","),
         State: a.state,
@@ -143,6 +203,10 @@ export function registerProductTools(ctx: ToolContext) {
         sku: z.string().optional(),
         id: z.string().optional().describe("UNAS product ID (takes precedence over sku)"),
         contentType: z.enum(CONTENT_TYPES).default("full"),
+        requestedData: z
+          .array(z.string())
+          .optional()
+          .describe("Only these first-level Product fields, e.g. [\"Name\",\"Prices\",\"Meta\"] (sets contentType=custom)"),
         lang: z.string().length(2).optional(),
         detail: z.enum(["summary", "full"]).default("full"),
       },
@@ -150,10 +214,20 @@ export function registerProductTools(ctx: ToolContext) {
     },
     safe(async (a) => {
       if (!a.sku && !a.id) throw new Error("Provide sku or id.");
+      const custom = !!a.requestedData?.length;
+      if (a.contentType === "custom" && !custom) {
+        throw new Error("contentType=custom needs requestedData, e.g. [\"Name\",\"Prices\"].");
+      }
       const doc = await client.call(
         "getProduct",
         "Params",
-        compact({ Id: a.id, Sku: a.id ? undefined : a.sku, ContentType: a.contentType, Lang: a.lang }),
+        compact({
+          Id: a.id,
+          Sku: a.id ? undefined : a.sku,
+          ContentType: custom ? "custom" : a.contentType,
+          RequestedData: custom ? a.requestedData!.join(",") : undefined,
+          Lang: a.lang,
+        }),
         { kind: "single" }
       );
       const product = productsFrom(doc)[0];
@@ -177,6 +251,8 @@ export function registerProductTools(ctx: ToolContext) {
         unit: z.string().optional(),
         status: PRODUCT_STATUS.optional(),
         price: priceInput.optional(),
+        vat: vatInput.optional(),
+        stockManaged: stockManagedInput.optional(),
         categoryId: z.string().optional().describe("New base category ID"),
         shortDescription: z.string().optional(),
         longDescription: z.string().optional().describe("HTML allowed"),
@@ -204,13 +280,16 @@ export function registerProductTools(ctx: ToolContext) {
       title: "Create product",
       description:
         "Create a new product. Required by UNAS: sku, name, unit, a base category and the normal price (net + gross). " +
-        "Status defaults to 1 (active). Use dryRun to preview the XML.",
+        "Status defaults to 1 (active). Set stockManaged=true if you will set stock with unas_set_stock, and vat to " +
+        "override the shop's default VAT. Use dryRun to preview the XML.",
       inputSchema: {
         sku: z.string().min(1),
         name: z.string().min(1),
         unit: z.string().default("db"),
         status: PRODUCT_STATUS.default("1"),
         price: priceInput,
+        vat: vatInput.optional(),
+        stockManaged: stockManagedInput.optional(),
         categoryId: z.string().optional().describe("Existing category ID"),
         categoryName: z
           .string()

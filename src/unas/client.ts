@@ -1,4 +1,4 @@
-import type { UnasConfig } from "../config.js";
+import type { Subscription, UnasConfig } from "../config.js";
 import {
   UnasApiError,
   UnasAuthGuardError,
@@ -27,6 +27,14 @@ export interface LoginInfo {
   permissions: string[];
   apiKeyExpire?: string;
   webshopInfo?: XmlObject;
+}
+
+/** Map the login's Subscription value (e.g. "premium-20000", "vip-...") to a limit tier, if recognised. */
+export function parseSubscription(value: string | undefined): Subscription | undefined {
+  const v = value?.trim().toLowerCase() ?? "";
+  if (v.startsWith("vip")) return "vip";
+  if (v.startsWith("premium")) return "premium";
+  return undefined;
 }
 
 export type CallKind = "single" | "bulk";
@@ -90,6 +98,14 @@ export class UnasClient {
     this.budget = new HourlyBudget(now);
   }
 
+  /**
+   * Subscription tier used for the rate limits: what the shop reported at login, otherwise the configured
+   * UNAS_SUBSCRIPTION. The shop's own value wins so that a wrong setting cannot let us exceed the real limits.
+   */
+  get subscription(): Subscription {
+    return parseSubscription(this.login_?.subscription) ?? this.config.subscription;
+  }
+
   /** Throws if too many authentication failures happened recently. */
   private checkAuthFailures() {
     const cutoff = this.now() - AUTH_WINDOW_MS;
@@ -132,7 +148,7 @@ export class UnasClient {
   }
 
   private async doLogin(): Promise<LoginInfo> {
-    const sub = this.config.subscription;
+    const sub = this.subscription;
     const ban = this.bans.get("login");
     if (ban && ban.until > this.now()) throw new UnasBanError("login", ban.message);
     this.checkAuthFailures();
@@ -191,7 +207,12 @@ export class UnasClient {
       this.bans.delete(endpoint);
     }
 
-    const sub = this.config.subscription;
+    this.checkFailures(endpoint);
+    this.checkAuthFailures();
+    // Log in first: the login tells us the shop's real subscription, which decides the limits below.
+    let login = await this.getLogin();
+
+    const sub = this.subscription;
     const safety = this.config.rateSafety;
     const limit = limitsFor(endpoint)[opts.kind][sub];
     const bucket = `${endpoint}:${opts.kind}`;
@@ -199,12 +220,10 @@ export class UnasClient {
       [bucket, Math.max(1, Math.floor(limit * safety))],
       ["global", Math.floor(GLOBAL_LIMIT[sub] * safety)],
     ];
-    this.checkFailures(endpoint);
-    this.checkAuthFailures();
-    // Reserve the budget synchronously, before any await, so concurrent calls cannot all pass the check.
+    // Reserve the budget synchronously (no await between check and post setup), so concurrent calls cannot
+    // all pass the check.
     this.reserve(endpoint, buckets);
 
-    let login = await this.getLogin();
     let result: XmlObject;
     try {
       result = await this.post(endpoint, xml, login.token);
@@ -235,11 +254,13 @@ export class UnasClient {
   }
 
   status() {
-    const sub = this.config.subscription;
+    const sub = this.subscription;
     const failures: Record<string, number> = {};
     for (const [ep, f] of this.failures) if (f.count > 0) failures[ep] = f.count;
     return {
       subscription: sub,
+      subscriptionSource: parseSubscription(this.login_?.subscription) ? "login" : "config (UNAS_SUBSCRIPTION)",
+      shopSubscription: this.login_?.subscription,
       safetyFactor: this.config.rateSafety,
       globalLimitPerHour: GLOBAL_LIMIT[sub],
       callsLastHourByBucket: this.budget.snapshot(),

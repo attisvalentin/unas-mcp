@@ -4,7 +4,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { loadConfig } from "../src/config.js";
 import { createServer } from "../src/server.js";
-import { parseBanUntil, UnasClient } from "../src/unas/client.js";
+import { parseBanUntil, parseSubscription, UnasClient } from "../src/unas/client.js";
+import { completePrice } from "../src/tools/products.js";
 import { buildXml, parseXml } from "../src/unas/xml.js";
 import { toUnix } from "../src/util/dates.js";
 import { jsonResult } from "../src/util/result.js";
@@ -359,4 +360,75 @@ test("raw get refuses getOrder with InvoiceAutoSet (hidden write)", async () => 
   assert.equal(r.isError, true);
   assert.match(r.text, /InvoiceAutoSet/);
   assert.equal(mock.calls.length, 0);
+});
+
+test("rate limits follow the shop's subscription from login, not a wrong UNAS_SUBSCRIPTION", async () => {
+  // Mock login reports "premium"; configuring vip must not raise the bulk limit above 27 (30 * 0.9).
+  const { call, mock, unas } = await connect({ UNAS_SUBSCRIPTION: "vip" });
+  for (let i = 0; i < 27; i++) assert.equal((await call("unas_list_orders", {})).isError, false);
+  const r = await call("unas_list_orders", {});
+  assert.equal(r.isError, true);
+  assert.match(r.text, /Local rate guard/);
+  assert.equal(mock.calls.filter((c) => c.endpoint === "getOrder").length, 27);
+  assert.equal(unas.subscription, "premium");
+  assert.equal(unas.status().subscriptionSource, "login");
+});
+
+test("parseSubscription maps UNAS package names to limit tiers", () => {
+  assert.equal(parseSubscription("premium-20000"), "premium");
+  assert.equal(parseSubscription("VIP-50000"), "vip");
+  assert.equal(parseSubscription("something-else"), undefined);
+  assert.equal(parseSubscription(undefined), undefined);
+});
+
+test("create product: vat, computed net price and stock management in the XML", async () => {
+  const { call } = await connect();
+  const r = await call("unas_create_product", {
+    sku: "t1", name: "Teszt", price: { gross: 12700 }, vat: "27", stockManaged: true, categoryId: "1", dryRun: true,
+  });
+  assert.equal(r.isError, false, r.text);
+  const xml: string = r.json.xml;
+  assert.match(xml, /<Prices>\s*<Vat>27%<\/Vat>\s*<Price>\s*<Type>normal<\/Type>\s*<Net>10000<\/Net>\s*<Gross>12700<\/Gross>/);
+  assert.match(xml, /<Stocks>\s*<Status>\s*<Active>1<\/Active>/);
+});
+
+test("update product: vat alone is sent without a price; named VAT keys are kept and not used for math", async () => {
+  const { call } = await connect();
+  const r1 = await call("unas_update_product", { sku: "t1", vat: "18%", dryRun: true });
+  assert.match(r1.json.xml, /<Prices>\s*<Vat>18%<\/Vat>\s*<\/Prices>/);
+  const r2 = await call("unas_update_product", { sku: "t1", vat: "AAM", price: { gross: 1000 }, dryRun: true });
+  assert.match(r2.json.xml, /<Vat>AAM<\/Vat>/);
+  assert.doesNotMatch(r2.json.xml, /<Net>/);
+  assert.equal(completePrice({ net: 100 }, "5%")!.gross, 105);
+});
+
+test("set stock on a product without stock management is an error with a hint", async () => {
+  const mock = mockUnas({
+    failWith: (ep) =>
+      ep === "setStock"
+        ? {
+            status: 400,
+            body: "<Products><Product><Sku>t1</Sku><Status>error</Status><Error><![CDATA[Stock Management Off]]></Error></Product></Products>",
+          }
+        : undefined,
+  });
+  const { call } = await connect({}, mock);
+  const r = await call("unas_set_stock", { items: [{ sku: "t1", action: "modify", qty: 5 }] });
+  assert.equal(r.isError, true);
+  assert.match(r.json.hint, /stockManaged: true/);
+});
+
+test("custom content type: requestedData is sent, and missing requestedData is rejected locally", async () => {
+  const { call, mock } = await connect();
+  const before = mock.calls.length;
+  for (const tool of ["unas_get_product", "unas_list_products"]) {
+    const r = await call(tool, { sku: "t1", skus: ["t1"], contentType: "custom" });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /needs requestedData/);
+  }
+  assert.equal(mock.calls.length, before, "nothing may reach UNAS");
+  await call("unas_get_product", { sku: "t1", requestedData: ["Name", "Meta"] });
+  const body = mock.calls.at(-1)!.body;
+  assert.match(body, /<ContentType>custom<\/ContentType>/);
+  assert.match(body, /<RequestedData>Name,Meta<\/RequestedData>/);
 });

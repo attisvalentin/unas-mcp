@@ -27,7 +27,7 @@ Az UNAS API XML-alapú, és a limitjei szigorúak. Ha egy listázó hívást tú
 | `unas_list_order_statuses` | A boltban beállított rendelés státuszok |
 | `unas_update_order` ✎ | Státusz és értesítő e-mail, csomagszám, követési URL, számla adatok, admin megjegyzés |
 | `unas_list_products` / `unas_get_product` | Termékek keresése és lekérése (SKU, kategória, státusz, módosítás alapján) |
-| `unas_update_product` ✎ / `unas_create_product` ✎ | Név, ár, státusz, kategória, leírás, plusz bármilyen nyers mező az `extra` paraméterben |
+| `unas_update_product` ✎ / `unas_create_product` ✎ | Név, ár, ÁFA-kulcs (`vat`, a hiányzó nettó/bruttó árat kiszámolja), készletkezelés (`stockManaged`), státusz, kategória, leírás, plusz bármilyen nyers mező az `extra` paraméterben |
 | `unas_delete_products` ⚠ | Termékek törlése (`confirm: true` kell hozzá) |
 | `unas_get_stock` / `unas_set_stock` ✎ | Készlet lekérdezése és módosítása (`modify`/`in`/`out`, változatok, további raktárak). A 100-nál nagyobb kéréseket automatikusan feldarabolja. |
 | `unas_list_categories`, `unas_list_customers`, `unas_list_methods` | Kategóriák, vásárlók, fizetési és szállítási módok |
@@ -78,7 +78,7 @@ Kipróbálni MCP Inspectorral tudod: `UNAS_API_KEY=... npm run inspect`
 | Változó | Alapérték | Leírás |
 |---|---|---|
 | `UNAS_API_KEY` | – (kötelező) | API kulcs |
-| `UNAS_SUBSCRIPTION` | `premium` | `premium` vagy `vip`, ettől függnek a limitek |
+| `UNAS_SUBSCRIPTION` | `premium` | `premium` vagy `vip`. Csak tartalék: a limiteket a szerver a bejelentkezéskor kapott csomagból állítja be, ez az érték akkor számít, ha a csomag nem ismerhető fel |
 | `UNAS_READ_ONLY` | `false` | `true` esetén nem jelennek meg az író eszközök |
 | `UNAS_TIMEZONE` | `Europe/Budapest` | Az időzóna nélküli dátumok értelmezéséhez |
 | `UNAS_RATE_SAFETY` | `0.9` | A dokumentált limit mekkora részét használhatja a szerver |

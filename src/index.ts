@@ -10,7 +10,8 @@ async function main() {
   await server.connect(transport);
   // stdout is the protocol channel: log to stderr only.
   console.error(
-    `${SERVER_NAME} ${SERVER_VERSION} running on stdio (${config.subscription.toUpperCase()}, ` +
+    `${SERVER_NAME} ${SERVER_VERSION} running on stdio (limits from the shop's subscription, ` +
+      `fallback ${config.subscription.toUpperCase()}, ` +
       `${config.readOnly ? "read-only" : "read-write"})`
   );
 
