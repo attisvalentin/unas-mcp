@@ -56,7 +56,7 @@ Az asszisztens a kérést a megfelelő UNAS API hívásokká alakítja. Közben 
 - **Node.js 22** vagy újabb (`node -v`)
 - **UNAS PREMIUM vagy VIP** előfizetés, mert az API csak ezekkel érhető el
 - **UNAS API kulcs**
-- Egy **MCP kliens**, például [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor vagy VS Code
+- Egy **MCP kliens**, például [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), [OpenAI Codex](https://developers.openai.com/codex), Cursor vagy VS Code
 
 ### API kulcs létrehozása
 
@@ -136,6 +136,36 @@ claude mcp add unas \
 ```
 
 Ellenőrzés: `claude mcp list`, illetve a Claude Code-on belül a `/mcp` parancs. Ha minden projektben elérhetővé szeretnéd tenni, add hozzá a `--scope user` kapcsolót.
+
+### OpenAI Codex (CLI, IDE bővítmény, ChatGPT desktop)
+
+Parancssorból:
+
+```bash
+codex mcp add unas \
+  --env UNAS_API_KEY=ide-az-api-kulcs \
+  --env UNAS_READ_ONLY=true \
+  -- node /teljes/ut/unas-mcp/dist/index.js
+```
+
+Vagy kézzel, a `~/.codex/config.toml` fájlban (Windows alatt `%USERPROFILE%\.codex\config.toml`):
+
+```toml
+[mcp_servers.unas]
+command = "node"
+args = ["/teljes/ut/unas-mcp/dist/index.js"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+[mcp_servers.unas.env]
+UNAS_API_KEY = "ide-az-api-kulcs"
+UNAS_READ_ONLY = "true"
+```
+
+- Ellenőrzés: `codex mcp list`, illetve a Codexen belül a `/mcp` parancs.
+- A Codex CLI, az IDE bővítmény és a ChatGPT desktop alkalmazás ugyanezt a konfigurációt használja, ezért elég egyszer beállítani.
+- A `tool_timeout_sec` emelését ajánlom. A Codex alapból 60 másodperc után megszakítja az eszközhívást, és ennyi a szerver HTTP timeoutja (`UNAS_TIMEOUT_MS`) is. Egy lassú, nagy UNAS lista emiatt félbeszakadhat.
+- Projektre szóló beállítás is lehetséges a projekt `.codex/config.toml` fájljában. Ezt a Codex csak megbízhatónak jelölt projektben tölti be. Ilyenkor ne commitold az API kulcsot.
 
 ### Más MCP kliensek (Cursor, VS Code, …)
 
@@ -251,7 +281,7 @@ Az UNAS API limitjei szigorúak. Ha egy listázó hívást túl sokszor futtatsz
 
 | Jelenség | Megoldás |
 |---|---|
-| Nem jelennek meg az `unas_…` eszközök | Ellenőrizd, hogy az útvonal a `dist/index.js` fájlra mutat, és lefutott az `npm run build`. Indítsd újra a klienst. Claude Code-ban nézd meg a `/mcp` parancs kimenetét. |
+| Nem jelennek meg az `unas_…` eszközök | Ellenőrizd, hogy az útvonal a `dist/index.js` fájlra mutat, és lefutott az `npm run build`. Indítsd újra a klienst. Claude Code-ban és Codexben nézd meg a `/mcp` parancs kimenetét. |
 | `UNAS_API_KEY is required` | Nincs megadva az API kulcs az `env` részben. |
 | Azonosítási hiba | Rossz vagy lejárt a kulcs, vagy nincs jogosultsága az adott végponthoz. Nézd meg az UNAS adminban. Több hibás próbálkozás után a szerver 10 percig szünetel. |
 | `IP is banned till …` | Az UNAS letiltotta az IP-t. Várd ki a jelzett időt, és ne próbálkozz közben, mert a tiltás meghosszabbodhat. |
