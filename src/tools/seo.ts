@@ -24,8 +24,9 @@ export const productSeoInput = z
   .object({
     ...metaFields,
     imageAlt: z.string().optional().describe(
-        "Default ALT/TITLE text of the product images (UNAS: Images.DefaultAlt). Only works once the product has " +
-          "images; UNAS answers \"No modifiable data\" otherwise."
+        "ALT/TITLE text of the product images (UNAS: Images.DefaultAlt). It overwrites the ALT of every image of " +
+          "the product, including individually set ones, so check them first if they may differ. Only works once " +
+          "the product has images; UNAS answers \"No modifiable data\" otherwise."
       ),
   })
   .describe(`SEO data. ${SEO_NOTE}`);
