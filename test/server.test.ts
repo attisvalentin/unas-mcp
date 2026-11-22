@@ -7,6 +7,7 @@ import { createServer } from "../src/server.js";
 import { parseBanUntil, UnasClient } from "../src/unas/client.js";
 import { buildXml, parseXml } from "../src/unas/xml.js";
 import { toUnix } from "../src/util/dates.js";
+import { jsonResult } from "../src/util/result.js";
 
 // ------------------------------------------------------------- mock UNAS
 
@@ -47,8 +48,11 @@ function mockUnas(opts: { failWith?: (ep: string, n: number) => { status: number
           <Item><Id>shipping-cost</Id><Sku>shipping-cost</Sku><Name>Szállítás</Name><Quantity>1</Quantity><PriceGross>2700</PriceGross></Item></Items>
           </Order></Orders>`)
         );
+      case "getCategory":
+        return new Response(xml(`<Categories><Category><Id>1</Id><Name>Bögrék</Name></Category></Categories>`));
       case "setStock":
       case "setOrder":
+      case "setProduct":
         return new Response(xml(`<Products><Product><Sku>x</Sku><Status>ok</Status></Product></Products>`));
       default:
         return new Response(xml(`<Error>Unknown endpoint</Error>`), { status: 400 });
@@ -265,4 +269,40 @@ test("ban expiry is parsed in the shop time zone", () => {
   assert.equal(parseBanUntil("IP is banned till 02.28.2099 10:00:00", tz), Date.UTC(2099, 1, 28, 9));
   assert.equal(parseBanUntil("IP is banned till 28.02.2099 10:00:00", tz), Date.UTC(2099, 1, 28, 9));
   assert.equal(parseBanUntil("IP is banned", tz), undefined);
+});
+
+test("truncated output stays valid JSON and says how many items are shown", () => {
+  const data = { count: 500, orders: Array.from({ length: 500 }, (_, i) => ({ key: `K${i}`, name: "x".repeat(100) })) };
+  const text = (jsonResult(data, 5000).content[0] as { text: string }).text;
+  assert.ok(text.length <= 5000);
+  const parsed = JSON.parse(text);
+  assert.equal(parsed.truncated.total, 500);
+  assert.equal(parsed.orders.length, parsed.truncated.shown);
+  assert.ok(parsed.truncated.shown > 10 && parsed.truncated.shown < 500);
+  assert.equal(parsed.count, 500);
+
+  // Nested raw UNAS structure
+  const raw = { Orders: { Order: data.orders } };
+  const rawParsed = JSON.parse((jsonResult(raw, 3000).content[0] as { text: string }).text);
+  assert.equal(rawParsed.Orders.Order.length, rawParsed.Orders.truncated.shown);
+
+  // No list to shorten: wrapped partial text, still valid JSON
+  const blob = JSON.parse((jsonResult({ html: "<p>\"é\"</p>".repeat(2000) }, 2000).content[0] as { text: string }).text);
+  assert.equal(typeof blob.partialJson, "string");
+  assert.ok(blob.truncated.totalChars > 2000);
+});
+
+test("category cache: only the unfiltered tree is cached, product writes invalidate it", async () => {
+  const { call, mock } = await connect();
+  const catCalls = () => mock.calls.filter((c) => c.endpoint === "getCategory").length;
+  await call("unas_list_categories", {});
+  await call("unas_list_categories", {});
+  assert.equal(catCalls(), 1, "unfiltered tree served from cache");
+  await call("unas_list_categories", { modifiedSince: "2026-11-01" });
+  await call("unas_list_categories", { modifiedSince: "2026-11-01" });
+  assert.equal(catCalls(), 3, "filtered queries are not cached");
+  const r = await call("unas_create_product", { sku: "N1", name: "x", categoryName: "Új|Al", price: { net: 1, gross: 1.27 } });
+  assert.equal(r.isError, false, r.text);
+  await call("unas_list_categories", {});
+  assert.equal(catCalls(), 4, "cache invalidated after setProduct");
 });

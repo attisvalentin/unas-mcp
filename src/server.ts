@@ -26,7 +26,7 @@ Key facts:
 export function createServer(config: UnasConfig, client = new UnasClient(config)) {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
-    { instructions: INSTRUCTIONS, capabilities: { logging: {} } }
+    { instructions: INSTRUCTIONS }
   );
   const ctx: ToolContext = { server, client, config };
 

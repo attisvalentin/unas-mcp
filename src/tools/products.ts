@@ -192,6 +192,8 @@ export function registerProductTools(ctx: ToolContext) {
       const body = { Product: [compact({ Action: "modify", Lang: a.lang, Sku: a.sku, ...nodes })] };
       if (a.dryRun) return jsonResult({ dryRun: true, endpoint: "setProduct", xml: buildXml("Products", body) }, config.maxOutputChars);
       const doc = await client.call("setProduct", "Products", body, { kind: "single" });
+      // A category path (categoryName or extra.Categories) can create new categories on the fly.
+      client.invalidateCache("getCategory");
       return jsonResult(doc, config.maxOutputChars);
     })
   );
@@ -226,6 +228,8 @@ export function registerProductTools(ctx: ToolContext) {
       const body = { Product: [compact({ Action: "add", Sku: a.sku, ...productNodes(a) })] };
       if (a.dryRun) return jsonResult({ dryRun: true, endpoint: "setProduct", xml: buildXml("Products", body) }, config.maxOutputChars);
       const doc = await client.call("setProduct", "Products", body, { kind: "single" });
+      // A category path (categoryName or extra.Categories) can create new categories on the fly.
+      client.invalidateCache("getCategory");
       return jsonResult(doc, config.maxOutputChars);
     })
   );
@@ -248,6 +252,8 @@ export function registerProductTools(ctx: ToolContext) {
       const body = { Product: a.skus.map((sku) => ({ Action: "delete", Sku: sku })) };
       if (a.dryRun) return jsonResult({ dryRun: true, endpoint: "setProduct", xml: buildXml("Products", body) }, config.maxOutputChars);
       const doc = await client.call("setProduct", "Products", body, { kind: "single" });
+      // A category path (categoryName or extra.Categories) can create new categories on the fly.
+      client.invalidateCache("getCategory");
       return jsonResult(doc, config.maxOutputChars);
     })
   );

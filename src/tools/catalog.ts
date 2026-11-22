@@ -30,9 +30,11 @@ export function registerCatalogTools(ctx: ToolContext) {
         TimeStart: unixOrUndefined(ctx, a.modifiedSince),
         ContentType: a.contentType,
       });
+      // Only the full category tree is cached; filtered queries (especially modifiedSince) must be fresh.
+      const unfiltered = !a.id && !a.name && !a.parentId && !a.modifiedSince;
       const doc = await client.call("getCategory", "Params", params, {
         kind: a.id ? "single" : "bulk",
-        cacheTtlMs: config.cacheTtlMs,
+        cacheTtlMs: unfiltered ? config.cacheTtlMs : undefined,
       });
       const categories = asArray((doc.Categories as XmlObject | undefined)?.Category);
       return jsonResult({ count: categories.length, categories }, config.maxOutputChars);

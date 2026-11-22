@@ -166,9 +166,10 @@ export class UnasClient {
     return result;
   }
 
-  invalidateCache(endpointPrefix?: string) {
+  /** Drop cached responses of one endpoint (exact name, so getCustomer does not also clear getCustomerGroup), or all. */
+  invalidateCache(endpoint?: string) {
     for (const key of this.cache.keys()) {
-      if (!endpointPrefix || key.startsWith(endpointPrefix)) this.cache.delete(key);
+      if (!endpoint || key.startsWith(endpoint + "\n")) this.cache.delete(key);
     }
   }
 
