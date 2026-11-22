@@ -37,7 +37,22 @@ Az UNAS API XML-alapú, és a limitjei szigorúak. Ha egy listázó hívást tú
 | `unas_list_script_tags`, `unas_upsert_script_tag` ✎ / `unas_delete_script_tag` ⚠ | Egyedi scriptek (követő- és konverziós kódok) a head/body részbe, oldaltípus és nyelv szerinti szűréssel. Az új script inaktívan jön létre. |
 | `unas_raw_get` / `unas_raw_set` ⚠ | Bármely más végpont (kupon, termékparaméter, vásárlócsoport, raktár, matrica, oldal, beállítás…) |
 
+| `unas_docs_search` / `unas_docs_read` | Keresés a UNAS tudástár helyi másolatában (admin segédlet, API, kinézet…), ékezetekkel vagy nélkül, magyar szóalakokra is; egy oldal teljes szövege |
+| `unas_docs_sync` | A tudástár letöltése vagy frissítése a háttérben (~590 oldal, pár perc) |
+
 A ✎ és ⚠ jelű eszközök read-only módban nem jelennek meg.
+
+### UNAS tudástár offline
+
+A szerver a [UNAS tudástárat](https://unas.hu/tudastar) a saját gépeden tárolja, így a modell internetes keresés nélkül tud válaszolni arra, hogy hol van egy beállítás, hogyan működik egy funkció, vagy mi egy API mező pontos neve. A tartalom a UNAS-é: nem kerül a projektbe, csak a helyi cache-be (`~/.cache/unas-mcp/docs.json`, a `UNAS_DOCS_DIR` változóval áthelyezhető).
+
+```bash
+npm run docs:sync              # első letöltés / frissítés (a 30 napnál frissebb oldalakat kihagyja)
+npm run docs:sync -- --force   # mindent újra letölt
+npm run docs:sync -- api admin # csak ezek a szekciók
+```
+
+Ugyanez a `unas_docs_sync` eszközzel is elindítható. A cache-ben nem szereplő oldalt a `unas_docs_read` első olvasáskor letölti.
 
 A bolt sablonja, CSS-e és designja API-n keresztül nem szerkeszthető; kategóriához csak egy, az adminban már elkészített egyedi sablon rendelhető.
 
@@ -94,6 +109,7 @@ Kipróbálni MCP Inspectorral tudod: `UNAS_API_KEY=... npm run inspect`
 | `UNAS_MAX_OUTPUT_CHARS` | `80000` | Efölött az eszköz levágja a választ |
 | `UNAS_MAX_CONCURRENCY` | `4` | Párhuzamos kérések száma (1–5) |
 | `UNAS_BASE_URL` | `https://api.unas.eu/shop/` | Az API alap URL-je |
+| `UNAS_DOCS_DIR` | `~/.cache/unas-mcp` | A tudástár helyi másolatának mappája |
 
 ## Fontos tudnivalók a limitekről
 

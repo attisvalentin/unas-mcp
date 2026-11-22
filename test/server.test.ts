@@ -8,6 +8,11 @@ import { parseBanUntil, parseSubscription, UnasClient } from "../src/unas/client
 import { completePrice } from "../src/tools/products.js";
 import { buildXml, parseXml } from "../src/unas/xml.js";
 import { toUnix } from "../src/util/dates.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DocsStore, fold } from "../src/docs/store.js";
+import { extractArticle } from "../src/docs/html.js";
 import { jsonResult } from "../src/util/result.js";
 
 // ------------------------------------------------------------- mock UNAS
@@ -84,7 +89,7 @@ function mockUnas(opts: { failWith?: (ep: string, n: number) => { status: number
 async function connect(env: Record<string, string> = {}, mock = mockUnas()) {
   const config = loadConfig({ UNAS_API_KEY: "k", ...env });
   const unas = new UnasClient(config, mock.fetchImpl);
-  const server = createServer(config, unas);
+  const server = createServer(config, unas, new DocsStore(mkdtempSync(join(tmpdir(), "unas-docs-")), mock.fetchImpl));
   const [ct, st] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
   await Promise.all([server.connect(st), client.connect(ct)]);
@@ -542,4 +547,95 @@ test("script tag: new scripts start inactive, required fields and page filter ar
   assert.match(body, /<Action>add<\/Action>\s*<Status>inactive<\/Status>/);
   assert.match(body, /<Pages>\s*<Page>\s*<Id>order_send<\/Id>/);
   assert.match(body, /<PageFilterType>allow<\/PageFilterType>/);
+});
+
+// ------------------------------------------------------------ knowledge base
+
+const kbPage = (title: string, body: string) =>
+  `<html><head><title>${title} - UNAS</title></head><body><nav>Menü Hírlevél</nav>
+  <article id="blog-item-0" class="blog-item col-12"><div class="blog-title"><h1 class='text-title-1'>${title}</h1></div>
+  <div class="blog-text">${body}</div></article><div>Weboldalunk cookie-kat használ.</div></body></html>`;
+
+function mockKb() {
+  const urls: string[] = [];
+  const pages: Record<string, string> = {
+    "https://unas.hu/tudastar/admin":
+      `<a href="https://unas.hu/tudastar/admin/ertesitesek">x</a><a href="https://unas.hu/tudastar/admin/hirlevel">y</a>`,
+    "https://unas.hu/tudastar/api":
+      `<a href="https://unas.hu/tudastar/api/termekek">t</a><a href="https://unas.hu/tudastar/api/termekek-adatszerkezet">t</a>`,
+    "https://unas.hu/tudastar/admin/ertesitesek": kbPage(
+      "Értesítések",
+      "<p>A státusz módosítás értesítőket itt kapcsolhatod be.</p><ul><li>Admin</li><li>Vásárló</li></ul>"
+    ),
+    "https://unas.hu/tudastar/admin/hirlevel": kbPage("Hírlevél", "<p>Hírlevelet küldhetsz a feliratkozóknak.</p>"),
+    "https://unas.hu/tudastar/api/termekek": kbPage("Termékek", "<p>A termékek kezelése az API-n.</p>"),
+    "https://unas.hu/tudastar/api/termekek-adatszerkezet": kbPage(
+      "Adatszerkezet",
+      "<p>Meta.Title string</p><pre>&lt;Meta&gt;&lt;Title&gt;x&lt;/Title&gt;&lt;/Meta&gt;</pre>"
+    ),
+  };
+  const fetchImpl = (async (url: string | URL) => {
+    urls.push(String(url));
+    const body = pages[String(url)];
+    return body ? new Response(body) : new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  return { fetchImpl, urls };
+}
+
+test("knowledge base: article text is extracted without navigation, cookie bar or tags", () => {
+  const a = extractArticle(kbPage("Értesítések", "<p>Első&nbsp;bekezdés</p><pre>&lt;Meta&gt;</pre>"))!;
+  assert.equal(a.title, "Értesítések");
+  assert.match(a.text, /Első bekezdés/);
+  assert.match(a.text, /<Meta>/);
+  assert.doesNotMatch(a.text, /Menü|cookie|<p>/);
+  assert.equal(fold("Értesítő ŐŰ"), "ertesito ou");
+});
+
+test("knowledge base: sync, Hungarian search with accents and word forms, subpage titles, read", async () => {
+  const kb = mockKb();
+  const store = new DocsStore(mkdtempSync(join(tmpdir(), "unas-docs-")), kb.fetchImpl, { delayMs: 0 });
+  const status = await store.startSync({ sections: ["admin", "api"] });
+  assert.equal(status.fetched, 4);
+  assert.equal(status.failed.length, 0);
+
+  // accents optional, inflected forms match ("ertesitest" ~ "értesítőket"/"Értesítések")
+  const hits = await store.search("hol kapcsolom be a statusz ertesitest");
+  assert.equal(hits[0].url, "https://unas.hu/tudastar/admin/ertesitesek");
+  assert.match(hits[0].snippet, /státusz/);
+  const api = await store.search("Meta Title", { section: "api" });
+  assert.equal(api[0].title, "Termékek – Adatszerkezet");
+
+  // a second store on the same dir loads the cache; a fresh sync downloads nothing
+  const again = new DocsStore(store.dir, kb.fetchImpl, { delayMs: 0 });
+  assert.equal(await again.count(), 4);
+  const s2 = await again.startSync({ sections: ["admin"] });
+  assert.equal(s2.fetched, 0);
+  assert.equal(s2.skipped, 2);
+
+  const page = await again.read("ertesitesek");
+  assert.equal(page.title, "Értesítések");
+  assert.throws(() => again.resolve("https://evil.example/tudastar/x"), /Only unas.hu/);
+});
+
+test("knowledge base tools: empty cache explains how to sync; read fetches a missing page", async () => {
+  const kb = mockKb();
+  const config = loadConfig({ UNAS_API_KEY: "k" });
+  const store = new DocsStore(mkdtempSync(join(tmpdir(), "unas-docs-")), kb.fetchImpl, { delayMs: 0 });
+  const server = createServer(config, new UnasClient(config, mockUnas().fetchImpl), store);
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "0" });
+  await Promise.all([server.connect(st), client.connect(ct)]);
+  const call = async (name: string, args: Record<string, unknown>) => {
+    const r = await client.callTool({ name, arguments: args });
+    return JSON.parse((r.content as Array<{ text: string }>)[0].text);
+  };
+  assert.match((await call("unas_docs_search", { query: "értesítés" })).note, /unas_docs_sync/);
+  const page = await call("unas_docs_read", { page: "admin/hirlevel" });
+  assert.equal(page.title, "Hírlevél");
+  assert.deepEqual(kb.urls, ["https://unas.hu/tudastar/admin/hirlevel"]);
+  const found = await call("unas_docs_search", { query: "hírlevelek" });
+  assert.equal(found.results[0].url, "https://unas.hu/tudastar/admin/hirlevel");
+  // docs tools stay available in read-only mode
+  const ro = createServer(loadConfig({ UNAS_API_KEY: "k", UNAS_READ_ONLY: "true" }), undefined, store);
+  assert.ok(ro);
 });

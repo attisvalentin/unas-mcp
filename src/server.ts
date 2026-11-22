@@ -5,6 +5,8 @@ import { UnasClient } from "./unas/client.js";
 import { KNOWN_ENDPOINTS, limitsMarkdown } from "./unas/limits.js";
 import { registerCatalogTools } from "./tools/catalog.js";
 import { registerContentTools } from "./tools/content.js";
+import { registerDocsTools } from "./tools/docs.js";
+import { DocsStore } from "./docs/store.js";
 import type { ToolContext } from "./tools/context.js";
 import { registerOrderTools } from "./tools/orders.js";
 import { registerProductTools } from "./tools/products.js";
@@ -17,6 +19,8 @@ export const SERVER_VERSION = "0.1.0";
 const INSTRUCTIONS = `Tools for a UNAS (unas.hu) webshop: orders, products, stock, categories, customers, SEO, own pages
 and storefront scripts. The shop's design/theme (templates, CSS) cannot be edited through the API; a category can
 only be assigned an existing custom layout template ID.
+For questions about UNAS itself (where a setting is in the admin, how a feature works, API fields) search the
+local knowledge base with unas_docs_search and read pages with unas_docs_read before answering or guessing.
 Key facts:
 - UNAS strictly rate limits LIST queries (e.g. 30/hour on PREMIUM) and bans the IP for 1 hour if exceeded,
   or after 20 consecutive failed calls. Single lookups (order by key, product/stock by one SKU) are cheap.
@@ -29,7 +33,7 @@ Key facts:
 - In UNAS set calls, an omitted field is left unchanged and an empty field clears the stored value.
 - Set calls can partly fail: a tool result marked as an error lists the failed items; report them to the user.`;
 
-export function createServer(config: UnasConfig, client = new UnasClient(config)) {
+export function createServer(config: UnasConfig, client = new UnasClient(config), docs = new DocsStore()) {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { instructions: INSTRUCTIONS }
@@ -42,6 +46,7 @@ export function createServer(config: UnasConfig, client = new UnasClient(config)
   registerStockTools(ctx);
   registerCatalogTools(ctx);
   registerContentTools(ctx);
+  registerDocsTools(ctx, docs);
 
   // ---------------------------------------------------------------- resources
 
