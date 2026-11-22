@@ -47,7 +47,7 @@ function tzOffsetMs(utcMs: number, timeZone: string): number {
   return asUtc - utcMs;
 }
 
-function zonedToUtc(y: number, m: number, d: number, h: number, mi: number, s: number, timeZone: string): number {
+export function zonedToUtc(y: number, m: number, d: number, h: number, mi: number, s: number, timeZone: string): number {
   const guess = Date.UTC(y, m - 1, d, h, mi, s);
   // Two passes handle DST transitions correctly in practice.
   let ts = guess - tzOffsetMs(guess, timeZone);

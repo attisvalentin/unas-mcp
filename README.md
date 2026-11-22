@@ -40,7 +40,7 @@ A ✎ és ⚠ jelű eszközök read-only módban nem jelennek meg.
 ```bash
 npm install
 npm run build
-npm test        # 12 teszt egy mock UNAS API ellen
+npm test        # 16 teszt egy mock UNAS API ellen
 ```
 
 API kulcsot az UNAS adminban a **Beállítások → Külső kapcsolatok → API kapcsolat** menüben tudsz létrehozni. Ott azt is beállíthatod, hogy a kulcs mely végpontokat érheti el. Az API csak PREMIUM és VIP csomaggal használható.

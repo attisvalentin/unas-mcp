@@ -1,5 +1,6 @@
 import type { UnasConfig } from "../config.js";
 import { UnasApiError, UnasBanError, UnasError, UnasFailureGuardError, UnasRateLimitError } from "./errors.js";
+import { zonedToUtc } from "../util/dates.js";
 import { GLOBAL_LIMIT, LOGIN_LIMIT, limitsFor } from "./limits.js";
 import { asArray, buildXml, parseXml, type XmlObject } from "./xml.js";
 
@@ -66,7 +67,7 @@ export class UnasClient {
   private budget: HourlyBudget;
   private failures = new Map<string, { count: number; last: number }>();
   private cache = new Map<string, { at: number; value: XmlObject }>();
-  private bans = new Map<string, string>();
+  private bans = new Map<string, { message: string; until: number }>();
 
   constructor(
     readonly config: UnasConfig,
@@ -90,7 +91,12 @@ export class UnasClient {
 
   private async doLogin(): Promise<LoginInfo> {
     const sub = this.config.subscription;
-    this.guard("login", "login", Math.floor(LOGIN_LIMIT[sub] * this.config.rateSafety));
+    const ban = this.bans.get("login");
+    if (ban && ban.until > this.now()) throw new UnasBanError("login", ban.message);
+    this.reserve("login", [
+      ["login", Math.floor(LOGIN_LIMIT[sub] * this.config.rateSafety)],
+      ["global", Math.floor(GLOBAL_LIMIT[sub] * this.config.rateSafety)],
+    ]);
     const body = buildXml("Params", { ApiKey: this.config.apiKey, WebshopInfo: "true" });
     const doc = await this.post("login", body, undefined);
     const root = firstObject(doc);
@@ -127,8 +133,7 @@ export class UnasClient {
 
     const ban = this.bans.get(endpoint);
     if (ban) {
-      const until = parseBanUntil(ban);
-      if (until === undefined || until > this.now()) throw new UnasBanError(endpoint, ban);
+      if (ban.until > this.now()) throw new UnasBanError(endpoint, ban.message);
       this.bans.delete(endpoint);
     }
 
@@ -136,18 +141,23 @@ export class UnasClient {
     const safety = this.config.rateSafety;
     const limit = limitsFor(endpoint)[opts.kind][sub];
     const bucket = `${endpoint}:${opts.kind}`;
-    this.guard(endpoint, bucket, Math.max(1, Math.floor(limit * safety)));
-    this.guard(endpoint, "global", Math.floor(GLOBAL_LIMIT[sub] * safety));
+    const buckets: Array<[string, number]> = [
+      [bucket, Math.max(1, Math.floor(limit * safety))],
+      ["global", Math.floor(GLOBAL_LIMIT[sub] * safety)],
+    ];
     this.checkFailures(endpoint);
+    // Reserve the budget synchronously, before any await, so concurrent calls cannot all pass the check.
+    this.reserve(endpoint, buckets);
 
     let login = await this.getLogin();
     let result: XmlObject;
     try {
-      result = await this.post(endpoint, xml, login.token, bucket);
+      result = await this.post(endpoint, xml, login.token);
     } catch (err) {
       if (err instanceof UnasApiError && looksLikeAuthError(err)) {
         login = await this.getLogin(true);
-        result = await this.post(endpoint, xml, login.token, bucket);
+        this.reserve(endpoint, buckets); // the retry is a real call and counts against the limits too
+        result = await this.post(endpoint, xml, login.token);
       } else {
         throw err;
       }
@@ -172,7 +182,11 @@ export class UnasClient {
       globalLimitPerHour: GLOBAL_LIMIT[sub],
       callsLastHourByBucket: this.budget.snapshot(),
       consecutiveFailures: failures,
-      activeBans: Object.fromEntries(this.bans),
+      activeBans: Object.fromEntries(
+        [...this.bans]
+          .filter(([, b]) => b.until > this.now())
+          .map(([ep, b]) => [ep, { message: b.message, until: new Date(b.until).toISOString() }])
+      ),
       token: this.login_
         ? { valid: this.login_.expiresAt > this.now(), expiresAt: new Date(this.login_.expiresAt).toISOString() }
         : { valid: false },
@@ -182,9 +196,19 @@ export class UnasClient {
 
   // ------------------------------------------------------------ internals
 
-  private guard(endpoint: string, bucket: string, limit: number) {
-    const wait = this.budget.check(bucket, limit);
-    if (wait > 0) throw new UnasRateLimitError(endpoint, bucket, wait, limit);
+  /** Check all buckets first, then record in all of them: either the whole call is admitted or nothing is counted. */
+  private reserve(endpoint: string, buckets: Array<[bucket: string, limit: number]>) {
+    for (const [bucket, limit] of buckets) {
+      const wait = this.budget.check(bucket, limit);
+      if (wait > 0) throw new UnasRateLimitError(endpoint, bucket, wait, limit);
+    }
+    for (const [bucket] of buckets) this.budget.record(bucket);
+  }
+
+  /** Ban expiry from the UNAS message; falls back to one hour from now if it cannot be read or is already past. */
+  private banUntil(message: string): number {
+    const parsed = parseBanUntil(message, this.config.timezone);
+    return parsed !== undefined && parsed > this.now() ? parsed : this.now() + HOUR_MS;
   }
 
   private checkFailures(endpoint: string) {
@@ -208,15 +232,13 @@ export class UnasClient {
     this.failures.set(endpoint, f);
   }
 
-  private async post(endpoint: string, xml: string, token: string | undefined, bucket = "login"): Promise<XmlObject> {
+  /** Raw HTTP call. The caller must have reserved the rate budget already. */
+  private async post(endpoint: string, xml: string, token: string | undefined): Promise<XmlObject> {
     const headers: Record<string, string> = {
       "Content-Type": "application/xml; charset=UTF-8",
       Accept: "application/xml",
     };
     if (token) headers.Authorization = `Bearer ${token}`;
-
-    this.budget.record(bucket);
-    this.budget.record("global");
 
     let res: Response;
     try {
@@ -246,7 +268,7 @@ export class UnasClient {
       this.noteResult(endpoint, false);
       const message = errorMessage ?? (text.slice(0, 500) || res.statusText);
       if (/banned/i.test(message)) {
-        this.bans.set(endpoint, message);
+        this.bans.set(endpoint, { message, until: this.banUntil(message) });
         throw new UnasBanError(endpoint, message);
       }
       throw new UnasApiError(endpoint, message, res.status);
@@ -291,11 +313,22 @@ function looksLikeAuthError(err: UnasApiError): boolean {
   return err.httpStatus === 401 || /token|auth|login/i.test(err.apiMessage);
 }
 
-/** "IP is banned till 02.28.2022 10:00:00" -> epoch ms (best effort, local time). */
-function parseBanUntil(message: string): number | undefined {
-  const m = message.match(/(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+/**
+ * "IP is banned till 02.28.2022 10:00:00" -> epoch ms, read as wall-clock time in the shop's time zone.
+ * The documented example is MM.DD.YYYY; if the first number cannot be a month, DD.MM.YYYY is assumed.
+ */
+export function parseBanUntil(message: string, timeZone: string): number | undefined {
+  const m = message.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})\.?\s+(\d{1,2}):(\d{2}):(\d{2})/);
   if (!m) return undefined;
-  const [, mm, dd, yyyy, h, mi, s] = m;
-  const t = new Date(+yyyy, +mm - 1, +dd, +h, +mi, +s).getTime();
-  return Number.isFinite(t) ? t : undefined;
+  const [, a, b, yyyy, h, mi, s] = m.map(Number);
+  let month = a;
+  let day = b;
+  if (month > 12 && day <= 12) [month, day] = [b, a];
+  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+  try {
+    const t = zonedToUtc(yyyy, month, day, h, mi, s, timeZone);
+    return Number.isFinite(t) ? t : undefined;
+  } catch {
+    return undefined;
+  }
 }

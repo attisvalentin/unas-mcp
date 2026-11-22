@@ -28,6 +28,22 @@ const priceInput = z
   })
   .describe("Normal price. UNAS normally expects both net and gross.");
 
+/**
+ * Keys the tool itself controls. Letting `extra` set them would allow e.g. {"Action":"delete"} to turn an
+ * update into a delete (bypassing confirm), or {"Sku":"other"} to modify a different product.
+ */
+const RESERVED_EXTRA_KEYS = new Set(["action", "sku", "id", "lang"]);
+
+function checkExtra(extra: Record<string, unknown> | undefined) {
+  const bad = Object.keys(extra ?? {}).filter((k) => RESERVED_EXTRA_KEYS.has(k.toLowerCase()));
+  if (bad.length > 0) {
+    throw new Error(
+      `extra must not contain ${bad.join(", ")}: use the tool's own parameters (sku, lang) or ` +
+        `unas_delete_products for deletion.`
+    );
+  }
+}
+
 function productNodes(a: {
   name?: string;
   unit?: string;
@@ -39,6 +55,7 @@ function productNodes(a: {
   longDescription?: string;
   extra?: Record<string, unknown>;
 }): XmlObject {
+  checkExtra(a.extra);
   return compact({
     Statuses: a.status !== undefined ? { Status: [{ Type: "base", Value: a.status }] } : undefined,
     Name: a.name,

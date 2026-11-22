@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { loadConfig } from "../src/config.js";
 import { createServer } from "../src/server.js";
-import { UnasClient } from "../src/unas/client.js";
+import { parseBanUntil, UnasClient } from "../src/unas/client.js";
 import { buildXml, parseXml } from "../src/unas/xml.js";
 import { toUnix } from "../src/util/dates.js";
 
@@ -213,4 +213,56 @@ test("resources and prompts are exposed", async () => {
   assert.match((res.contents[0] as { text: string }).text, /2000 calls\/hour/);
   const prompts = (await client.listPrompts()).prompts.map((p) => p.name);
   assert.deepEqual(prompts.sort(), ["customer_lookup", "daily_order_report", "stock_check"]);
+});
+
+test("product extra cannot override Action/Sku (no delete without confirm)", async () => {
+  const { call, mock } = await connect();
+  for (const extra of [{ Action: "delete" }, { sku: "OTHER" }, { Id: "1" }]) {
+    const r = await call("unas_update_product", { sku: "A1", extra, dryRun: true });
+    assert.equal(r.isError, true, JSON.stringify(extra));
+    assert.match(r.text, /extra must not contain/);
+  }
+  const c = await call("unas_create_product", {
+    sku: "N1", name: "x", categoryId: "1", price: { net: 1, gross: 1.27 }, extra: { Action: "delete" }, dryRun: true,
+  });
+  assert.equal(c.isError, true);
+  const ok = await call("unas_update_product", { sku: "A1", extra: { Weight: 1.2 }, dryRun: true });
+  assert.equal(ok.isError, false, ok.text);
+  assert.match(ok.json.xml, /<Action>modify<\/Action>[\s\S]*<Sku>A1<\/Sku>[\s\S]*<Weight>1.2<\/Weight>/);
+  assert.equal(mock.calls.length, 0);
+});
+
+test("concurrent list calls cannot overshoot the local rate guard", async () => {
+  const { call, mock } = await connect(); // premium: 27 allowed
+  const results = await Promise.all(Array.from({ length: 35 }, () => call("unas_list_orders", {})));
+  assert.equal(results.filter((r) => !r.isError).length, 27);
+  assert.equal(results.filter((r) => /Local rate guard/.test(r.text)).length, 8);
+  assert.equal(mock.calls.filter((c) => c.endpoint === "getOrder").length, 27);
+});
+
+test("ban with unreadable expiry lasts one hour, then the endpoint is retried", async () => {
+  let now = Date.UTC(2026, 10, 22, 12);
+  let banned = true;
+  const mock = mockUnas({
+    failWith: (ep) =>
+      ep === "getOrder" && banned ? { status: 400, body: "<Error>IP is banned, try again later</Error>" } : undefined,
+  });
+  const unas = new UnasClient(loadConfig({ UNAS_API_KEY: "k" }), mock.fetchImpl, () => now);
+  const get = () => unas.call("getOrder", "Params", { Key: "1" }, { kind: "single" });
+  await assert.rejects(get, /banned/);
+  banned = false;
+  now += 59 * 60 * 1000;
+  const before = mock.calls.length;
+  await assert.rejects(get, /banned/);
+  assert.equal(mock.calls.length, before, "still blocked locally within the hour");
+  now += 2 * 60 * 1000;
+  await get();
+  assert.equal(mock.calls.filter((c) => c.endpoint === "getOrder").length, 2);
+});
+
+test("ban expiry is parsed in the shop time zone", () => {
+  const tz = "Europe/Budapest";
+  assert.equal(parseBanUntil("IP is banned till 02.28.2099 10:00:00", tz), Date.UTC(2099, 1, 28, 9));
+  assert.equal(parseBanUntil("IP is banned till 28.02.2099 10:00:00", tz), Date.UTC(2099, 1, 28, 9));
+  assert.equal(parseBanUntil("IP is banned", tz), undefined);
 });
