@@ -1,85 +1,120 @@
 # unas-mcp
 
-MCP szerver az [UNAS](https://unas.hu) webáruház API-hoz. Claude-ból (vagy bármely MCP kliensből) kezelhetők vele a rendelések, termékek, készlet, kategóriák és vásárlók.
+**MCP szerver az [UNAS](https://unas.hu) webáruházakhoz.** Ezzel a szerverrel Claude (vagy bármelyik másik MCP-képes AI asszisztens) hozzáfér a boltod adataihoz az UNAS API-n keresztül. Elég magyarul megírnod, mit szeretnél:
 
-Az UNAS API XML-alapú, és a limitjei szigorúak. Ha egy listázó hívást túl sokszor futtatsz, vagy egy végpont 20-szor egymás után hibára fut, az IP címed 1 órára le lesz tiltva. A szerver ezért magától kezeli ezeket a dolgokat:
+> „Milyen rendelések jöttek tegnap, és melyik vár még feldolgozásra?”
+> „Az 12345-000123 rendelést állítsd *Visszaigazolva* státuszra, és küldj róla e-mailt a vásárlónak.”
+> „Melyik termékből van 5 darabnál kevesebb raktáron?”
+> „Írj SEO meta leírást a cipők kategóriának, és mutasd meg, mi menne ki, mielőtt elmented.”
+> „Tegyél be egy Google Analytics kódot a head részbe, de egyelőre kikapcsolva.”
+> „Hol tudom bekapcsolni a státuszváltozásról szóló e-mail értesítést?” *(ezt a beépített UNAS tudástárból válaszolja meg, internet nélkül)*
 
-- **Token kezelés:** csak egyszer jelentkezik be. A token 2 óráig érvényes, lejárat előtt 5 perccel frissíti, és ha a token hibás, egyszer automatikusan újra bejelentkezik.
-- **Helyi rate limit:** minden végponthoz külön számolja a hívásokat egy órás csúszó ablakban, külön az egyedi (`single`) és a listázó (`bulk`) hívásokat, plusz egy globális számlálót. Az előfizetéshez dokumentált limitnek alapból csak a 90%-áig enged elmenni.
-- **Hibavédelem:** ha egy végpont 15-ször egymás után hibára fut, a szerver leállítja a hívásait, mielőtt az UNAS 20 hibánál letiltaná az IP-t.
-- **Hibás API kulcs védelem:** 10 perc alatt 3 sikertelen azonosítás után a szerver szünetelteti a bejelentkezést. Az UNAS 10 ilyen hívás után 2 órára az összes webáruház API-ját letiltja az adott IP-ről.
-- **Párhuzamosság:** egyszerre legfeljebb 4 kérést küld (az UNAS 5-öt enged).
-- **Részleges hibák:** ha egy set hívásban valamelyik tétel `Status=error` választ kap, az eszköz hibaként jelzi, és felsorolja a hibás tételeket.
-- **Tiltás felismerése:** ha jön egy `IP is banned till …` válasz, a végpontot a tiltás lejártáig nem hívja újra.
-- **Cache:** a ritkán változó törzsadatokat (státuszok, fizetési és szállítási módok, kategóriák) 10 percig tárolja.
-- **Tömörített kimenet:** a listák alapból rövid összefoglalót adnak, hogy kevesebb tokent használjanak. A teljes UNAS struktúrához add meg a `detail="full"` paramétert.
-- **Biztonságos írás:** minden írásnál van `dryRun` (megmutatja a küldendő XML-t). Törléshez és a nyers set híváshoz kötelező a `confirm`. Van teljes read-only mód is.
-- **Dátumok:** elfogad `2026-11-19`, `2026-11-19T08:30`, ISO vagy unix formátumot. Az időzóna nélküli dátumokat a bolt időzónájában értelmezi, és a csak dátumot tartalmazó záró érték a nap végét jelenti.
+Az asszisztens a kérést a megfelelő UNAS API hívásokká alakítja. Közben vigyáz a szigorú UNAS limitekre, és ha módosítana valamit a boltban, előbb megkérdez.
 
-## Eszközök
+> [!NOTE]
+> Ez egy független, nem hivatalos projekt. Az UNAS Online Kft. nem fejleszti, nem támogatja és nem felel érte.
 
-| Eszköz | Mit csinál |
+---
+
+## Tartalom
+
+- [Mire jó?](#mire-jó)
+- [Követelmények](#követelmények)
+- [Telepítés](#telepítés)
+- [Bekötés az AI kliensbe](#bekötés-az-ai-kliensbe)
+- [A UNAS tudástár offline használata](#a-unas-tudástár-offline-használata)
+- [Eszközök](#eszközök)
+- [Biztonság és limitek](#biztonság-és-limitek)
+- [Konfiguráció](#konfiguráció-környezeti-változók)
+- [Hibaelhárítás](#hibaelhárítás)
+- [Fejlesztés](#fejlesztés)
+- [Licenc](#licenc)
+
+---
+
+## Mire jó?
+
+| Terület | Mit tudsz csinálni |
 |---|---|
-| `unas_shop_info` | Bolt adatai, előfizetés, az API kulcs jogosultságai és lejárata |
-| `unas_rate_limit_status` | Elhasznált keret, hibaszámlálók, aktív tiltások |
-| `unas_list_orders` | Rendelések szűrése státusz, dátum, módosítás, státuszváltás, e-mail vagy számlázási állapot szerint |
-| `unas_get_order` | Egy rendelés minden adattal (ez az olcsó, egyedi limitet használja) |
-| `unas_list_order_statuses` | A boltban beállított rendelés státuszok |
-| `unas_update_order` ✎ | Státusz és értesítő e-mail, csomagszám, követési URL, számla adatok, admin megjegyzés |
-| `unas_list_products` / `unas_get_product` | Termékek keresése és lekérése (SKU, kategória, státusz, módosítás alapján) |
-| `unas_update_product` ✎ / `unas_create_product` ✎ | Név, ár, ÁFA-kulcs (`vat`, a hiányzó nettó/bruttó árat kiszámolja), készletkezelés (`stockManaged`), SEO (`seo`: meta cím, leírás, kulcsszavak, robots, SEO URL, kép ALT), státusz, kategória, leírás, plusz bármilyen nyers mező az `extra` paraméterben |
-| `unas_delete_products` ⚠ | Termékek törlése (`confirm: true` kell hozzá) |
-| `unas_get_stock` / `unas_set_stock` ✎ | Készlet lekérdezése és módosítása (`modify`/`in`/`out`, változatok, további raktárak). A 100-nál nagyobb kéréseket automatikusan feldarabolja. |
-| `unas_list_categories`, `unas_list_customers`, `unas_list_methods` | Kategóriák, vásárlók, fizetési és szállítási módok |
-| `unas_update_category` ✎ | Kategória neve, SEO, a lista feletti/alatti szöveg, menü- és oldalmegjelenés, szülő, egyedi kinézet sablon (`pageLayout`) |
-| `unas_list_pages` / `unas_get_page` | Saját oldalak és menüpontok, a `get_page` a HTML tartalmakkal együtt |
-| `unas_upsert_page` ✎ / `unas_delete_page` ⚠ | Oldal létrehozása vagy módosítása tartalommal és SEO-val; törlés a csak ehhez tartozó tartalmakkal. A `getPage`/`setPage` óránként csak 30 hívást enged (PREMIUM). |
-| `unas_list_script_tags`, `unas_upsert_script_tag` ✎ / `unas_delete_script_tag` ⚠ | Egyedi scriptek (követő- és konverziós kódok) a head/body részbe, oldaltípus és nyelv szerinti szűréssel. Az új script inaktívan jön létre. |
-| `unas_raw_get` / `unas_raw_set` ⚠ | Bármely más végpont (kupon, termékparaméter, vásárlócsoport, raktár, matrica, oldal, beállítás…) |
+| **Rendelések** | Szűrés státusz, dátum, e-mail cím, módosítás vagy számlázási állapot szerint. Egy rendelés minden adata. Státusz váltása értesítő e-maillel, csomagszám és követési link megadása, számlaadatok, admin megjegyzés. |
+| **Termékek** | Keresés és lekérés. Új termék létrehozása, meglévő módosítása: név, ár, ÁFA (a hiányzó nettó vagy bruttó árat kiszámolja), kategória, leírás, státusz, készletkezelés. Törlés. |
+| **Készlet** | Lekérdezés és módosítás (beállítás, bevételezés, kivét), változatokkal és több raktárral. A nagy tételszámú kéréseket magától feldarabolja. |
+| **SEO** | Meta cím, leírás, kulcsszavak, robots, SEO-barát URL, termékkép ALT szöveg. Termékekre, kategóriákra és saját oldalakra. |
+| **Kategóriák** | Név, SEO, a lista feletti és alatti szöveg, menü- és oldalmegjelenés, szülő kategória, egyedi kinézet sablon hozzárendelése. |
+| **Saját oldalak** | Oldalak és menüpontok listázása, létrehozása és módosítása HTML tartalommal és SEO-val, törlése. |
+| **Scriptek** | Követő- és konverziós kódok (Analytics, Pixel stb.) a head vagy a body részbe, oldaltípus és nyelv szerinti szűréssel. |
+| **Vásárlók, törzsadatok** | Vásárlók keresése, fizetési és szállítási módok, rendelés státuszok. |
+| **Bármi más** | A nyers `unas_raw_get` / `unas_raw_set` eszközzel minden más UNAS végpont elérhető, például kuponok, termékparaméterek, vásárlócsoportok vagy raktárak. |
+| **UNAS tudástár** | A teljes [UNAS tudástár](https://unas.hu/tudastar) (~590 oldal) a gépeden, kereshetően. Megmondja, hol van egy beállítás, hogyan működik egy funkció, mi egy API mező neve. |
 
-| `unas_docs_search` / `unas_docs_read` | Keresés a UNAS tudástár helyi másolatában (admin segédlet, API, kinézet…), ékezetekkel vagy nélkül, magyar szóalakokra is; egy oldal teljes szövege |
-| `unas_docs_sync` | A tudástár letöltése vagy frissítése a háttérben (~590 oldal, pár perc) |
+**Amit nem tud:** a bolt sablonja, CSS-e és designja az UNAS API-n keresztül nem szerkeszthető. Kategóriához csak olyan egyedi kinézet sablon rendelhető, amelyet előtte az adminban elkészítettél. Az admin egyes beállításaihoz (például az e-mail értesítések be- és kikapcsolásához) sincs API, ezeket az adminban kell átállítani. A tudástár ebben is segít.
 
-A ✎ és ⚠ jelű eszközök read-only módban nem jelennek meg.
+---
 
-### UNAS tudástár offline
+## Követelmények
 
-A szerver a [UNAS tudástárat](https://unas.hu/tudastar) a saját gépeden tárolja, így a modell internetes keresés nélkül tud válaszolni arra, hogy hol van egy beállítás, hogyan működik egy funkció, vagy mi egy API mező pontos neve. A tartalom a UNAS-é: nem kerül a projektbe, csak a helyi cache-be (`~/.cache/unas-mcp/docs.json`, a `UNAS_DOCS_DIR` változóval áthelyezhető).
+- **Node.js 22** vagy újabb (`node -v`)
+- **UNAS PREMIUM vagy VIP** előfizetés, mert az API csak ezekkel érhető el
+- **UNAS API kulcs**
+- Egy **MCP kliens**, például [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor vagy VS Code
 
-```bash
-npm run docs:sync              # első letöltés / frissítés (a 30 napnál frissebb oldalakat kihagyja)
-npm run docs:sync -- --force   # mindent újra letölt
-npm run docs:sync -- api admin # csak ezek a szekciók
-```
+### API kulcs létrehozása
 
-Ugyanez a `unas_docs_sync` eszközzel is elindítható. A cache-ben nem szereplő oldalt a `unas_docs_read` első olvasáskor letölti.
+1. Lépj be az UNAS adminba.
+2. Nyisd meg a **Beállítások → Külső kapcsolatok → API kapcsolat** menüt.
+3. Hozz létre egy új kulcsot, és jelöld be, mely végpontokat érheti el. Ha csak olvasni szeretnél, elég a `get…` jogosultság.
+4. Másold ki a kulcsot. Kezeld jelszóként, és ne tedd be a git repóba.
 
-A bolt sablonja, CSS-e és designja API-n keresztül nem szerkeszthető; kategóriához csak egy, az adminban már elkészített egyedi sablon rendelhető.
+> [!TIP]
+> Ha van **teszt webáruházad**, először azon próbáld ki a szervert.
 
-**Resource-ok:** `unas://limits` (a limitek táblázata), `unas://endpoints`
-**Promptok:** `daily_order_report`, `customer_lookup`, `stock_check`
+---
 
 ## Telepítés
 
 ```bash
+git clone https://github.com/attisvalentin/unas-mcp.git
+cd unas-mcp
 npm install
 npm run build
-npm test        # 22 teszt egy mock UNAS API ellen
 ```
 
-API kulcsot az UNAS adminban a **Beállítások → Külső kapcsolatok → API kapcsolat** menüben tudsz létrehozni. Ott azt is beállíthatod, hogy a kulcs mely végpontokat érheti el. Az API csak PREMIUM és VIP csomaggal használható.
+Ellenőrzés (nem kell hozzá API kulcs, egy szimulált UNAS API ellen fut):
 
-### Claude Desktop / Claude Code
+```bash
+npm test
+```
+
+A szerver a `dist/index.js` fájl, ezt indítja el az AI kliens. A teljes útvonalát kérdezd le a `pwd` paranccsal a projekt mappájában, mert a következő lépésekben szükség lesz rá.
+
+Opcionálisan, de erősen ajánlott letölteni a UNAS tudástárat (pár perc, ehhez sem kell API kulcs):
+
+```bash
+npm run docs:sync
+```
+
+---
+
+## Bekötés az AI kliensbe
+
+> [!IMPORTANT]
+> Kezdj **read-only módban** (`UNAS_READ_ONLY=true`). Ilyenkor az asszisztens csak olvasni tud, módosítani semmit. Ha a lekérdezések rendben mennek, kapcsold ki.
+
+### Claude Desktop
+
+Nyisd meg a **Settings → Developer → Edit Config** menüt, vagy szerkeszd közvetlenül a konfigurációs fájlt:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "unas": {
       "command": "node",
-      "args": ["/ABSZOLUT/UT/unas-mcp/dist/index.js"],
+      "args": ["/teljes/ut/unas-mcp/dist/index.js"],
       "env": {
         "UNAS_API_KEY": "ide-az-api-kulcs",
-        "UNAS_SUBSCRIPTION": "premium",
         "UNAS_READ_ONLY": "true"
       }
     }
@@ -87,51 +122,183 @@ API kulcsot az UNAS adminban a **Beállítások → Külső kapcsolatok → API 
 }
 ```
 
-Claude Code-ban:
-`claude mcp add unas -e UNAS_API_KEY=... -e UNAS_SUBSCRIPTION=premium -- node /ut/unas-mcp/dist/index.js`
+Windows alatt az útvonalban dupla perjel kell: `"C:\\Users\\nev\\unas-mcp\\dist\\index.js"`.
 
-Érdemes `UNAS_READ_ONLY=true` beállítással kezdeni, és csak akkor átállni írható módra, ha a lekérdezések már rendben működnek.
+Mentés után indítsd újra a Claude Desktopot. A beszélgetés ablakban az eszközök ikonja alatt megjelennek az `unas_…` eszközök.
 
-Kipróbálni MCP Inspectorral tudod: `UNAS_API_KEY=... npm run inspect`
+### Claude Code
+
+```bash
+claude mcp add unas \
+  -e UNAS_API_KEY=ide-az-api-kulcs \
+  -e UNAS_READ_ONLY=true \
+  -- node /teljes/ut/unas-mcp/dist/index.js
+```
+
+Ellenőrzés: `claude mcp list`, illetve a Claude Code-on belül a `/mcp` parancs. Ha minden projektben elérhetővé szeretnéd tenni, add hozzá a `--scope user` kapcsolót.
+
+### Más MCP kliensek (Cursor, VS Code, …)
+
+Bármelyik kliens működik, amely stdio-n indít MCP szervert. A parancs `node /teljes/ut/unas-mcp/dist/index.js`, a környezeti változók ugyanazok, mint fent.
+
+### Kipróbálás AI nélkül
+
+Az [MCP Inspector](https://github.com/modelcontextprotocol/inspector) böngészőben megmutatja az eszközöket, és kézzel is meghívhatod őket:
+
+```bash
+UNAS_API_KEY=ide-az-api-kulcs UNAS_READ_ONLY=true npm run inspect
+```
+
+### Írható mód
+
+Ha a read-only mód már rendben működik, állítsd át az `UNAS_READ_ONLY` értékét `false`-ra, vagy töröld a sort, majd indítsd újra a klienst. Ezután megjelennek az író eszközök is. Az asszisztens minden módosítás előtt összefoglalja, mit készül csinálni, és megvárja a jóváhagyásodat. A `dryRun` móddal azt is megnézheted, pontosan milyen XML menne ki az UNAS felé.
+
+---
+
+## A UNAS tudástár offline használata
+
+A szerver le tudja tölteni a [UNAS tudástárat](https://unas.hu/tudastar) a gépedre: az admin segédletet, az API dokumentációt, valamint a kinézet, hosting, integráció, rendelés és ügyfélfiók részeket. Így az asszisztens **internetes keresés nélkül**, a hivatalos leírásból válaszol, és nem találgat.
+
+```bash
+npm run docs:sync              # első letöltés vagy frissítés (a 30 napnál frissebb oldalakat kihagyja)
+npm run docs:sync -- --force   # mindent újra letölt
+npm run docs:sync -- api admin # csak ezeket a szekciókat
+```
+
+- A letöltés a `unas_docs_sync` eszközzel a beszélgetésből is elindítható, ilyenkor a háttérben fut.
+- A keresés ékezettel és anélkül is működik, és a magyar ragozott alakokat is felismeri („értesítéseket” → „Értesítések”).
+- A tartalom az UNAS-é, ezért **nem kerül a projektbe**. Csak a saját gépeden tárolódik a `~/.cache/unas-mcp/docs.json` fájlban, ami kb. 2,5 MB. A helye az `UNAS_DOCS_DIR` változóval módosítható.
+- Ha egy oldal még nincs a helyi másolatban, a `unas_docs_read` első olvasáskor letölti.
+
+---
+
+## Eszközök
+
+| Eszköz | Mit csinál |
+|---|---|
+| `unas_shop_info` | A bolt adatai, az előfizetés, az API kulcs jogosultságai és lejárata |
+| `unas_rate_limit_status` | Elhasznált keret, hibaszámlálók, aktív tiltások |
+| `unas_list_orders` | Rendelések szűrése státusz, dátum, módosítás, státuszváltás, e-mail vagy számlázási állapot szerint |
+| `unas_get_order` | Egy rendelés minden adattal (olcsó, az egyedi limitet használja) |
+| `unas_list_order_statuses` | A boltban beállított rendelés státuszok |
+| `unas_update_order` ✎ | Státusz és értesítő e-mail, csomagszám, követési URL, számla adatok, admin megjegyzés |
+| `unas_list_products` / `unas_get_product` | Termékek keresése és lekérése SKU, kategória, státusz vagy módosítás alapján |
+| `unas_create_product` ✎ / `unas_update_product` ✎ | Név, ár, ÁFA (`vat`), készletkezelés (`stockManaged`), SEO (`seo`), státusz, kategória, leírás, plusz bármilyen nyers mező az `extra` paraméterben |
+| `unas_delete_products` ⚠ | Termékek törlése (`confirm: true` kell hozzá) |
+| `unas_get_stock` / `unas_set_stock` ✎ | Készlet lekérdezése és módosítása (`modify`/`in`/`out`, változatok, raktárak) |
+| `unas_list_categories` / `unas_update_category` ✎ | Kategóriák listája; név, SEO, felső és alsó szöveg, megjelenés, szülő, egyedi sablon (`pageLayout`) |
+| `unas_list_customers`, `unas_list_methods` | Vásárlók; fizetési és szállítási módok |
+| `unas_list_pages` / `unas_get_page` | Saját oldalak és menüpontok, a `get_page` a HTML tartalommal együtt |
+| `unas_upsert_page` ✎ / `unas_delete_page` ⚠ | Oldal létrehozása vagy módosítása tartalommal és SEO-val; törlés a csak hozzá tartozó tartalmakkal együtt |
+| `unas_list_script_tags` / `unas_upsert_script_tag` ✎ / `unas_delete_script_tag` ⚠ | Egyedi scriptek a head vagy body részbe. Az új script kikapcsolva jön létre. |
+| `unas_raw_get` / `unas_raw_set` ⚠ | Bármelyik más UNAS végpont nyers hívása |
+| `unas_docs_search` / `unas_docs_read` | Keresés a UNAS tudástár helyi másolatában; egy oldal teljes szövege |
+| `unas_docs_sync` | A tudástár letöltése vagy frissítése a háttérben |
+
+A ✎ (író) és ⚠ (törlő vagy nyers író) eszközök read-only módban meg sem jelennek.
+
+**Resource-ok:** `unas://limits` (a limitek táblázata), `unas://endpoints` (a végpontok listája)
+**Promptok (kész feladatsablonok):** `daily_order_report` (napi rendelésösszesítő), `customer_lookup` (vásárló keresése), `stock_check` (készletellenőrzés)
+
+---
+
+## Biztonság és limitek
+
+Az UNAS API limitjei szigorúak. Ha egy listázó hívást túl sokszor futtatsz, vagy egy végpont 20-szor egymás után hibára fut, az **IP címedet 1 órára letiltják**. Ismétlődő sértésnél a tiltás egyre hosszabb: 1 nap, 1 hónap, végül 1 év. A szerver ezért magától vigyáz:
+
+- **Helyi rate limit:** végpontonként, egy órás csúszó ablakban számolja a hívásokat, külön az egyedi és külön a listázó hívásokat. A limitet a bejelentkezéskor kapott előfizetésből (PREMIUM vagy VIP) állítja be, és alapból csak 90%-ig engedi elhasználni.
+- **Hibavédelem:** ha egy végpont 15-ször egymás után hibára fut, a szerver megállítja, mielőtt az UNAS letiltaná az IP-t.
+- **Hibás API kulcs elleni védelem:** 3 sikertelen bejelentkezés után 10 percig szünetel. Az UNAS 10 ilyen próbálkozás után az összes bolt API-ját letiltaná az adott IP-ről.
+- **Tiltás felismerése:** ha az UNAS tiltást jelez, a szerver a tiltás lejártáig nem hívja újra az adott végpontot.
+- **Párhuzamosság:** egyszerre legfeljebb 4 kérést küld (az UNAS 5-öt enged).
+- **Token kezelés:** egyszer jelentkezik be, és a tokent a lejárata előtt megújítja.
+- **Cache:** a ritkán változó törzsadatokat (státuszok, fizetési és szállítási módok, kategóriák) 10 percig tárolja.
+- **Biztonságos írás:** minden író eszköznek van `dryRun` módja. Törléshez és nyers íráshoz kötelező a `confirm`. A részben sikertelen írásoknál felsorolja a hibás tételeket.
+- **Tömör kimenet:** a listák alapból rövid összefoglalót adnak, hogy kevesebb tokent használjanak. A teljes UNAS adatszerkezethez add meg a `detail="full"` paramétert.
+
+### Amit érdemes tudni
+
+- A **listázó** lekérések keretei szűkösek. A getOrder, getProduct, getStock, getCategory és getCustomer hívásokból PREMIUM csomagban **30 jut óránként**, VIP-ben 90. Az egyedi lekérésekből (egy rendelés vagy egy SKU) 1000, illetve 3000.
+- Ezért jobb egy szűk időszakot egy nagyobb oldalon lekérni, mint sok kicsi oldalt lapozni.
+- A `getPage`/`setPage` (saját oldalak) PREMIUM csomagban óránként csak 30 hívást enged, olvasásra és írásra együtt.
+- A limitek **IP címre és boltra** vonatkoznak. Ha ugyanarról az IP-ről más integráció (könyvelő program, piactér-szinkron stb.) is hívja az API-t, azt a szerver nem látja.
+- Éjfél körül (±10 perc) az UNAS karbantartást végezhet, ilyenkor ne fusson hívás.
+- Az UNAS írási logikája szerint a kihagyott mező változatlan marad, az üresen küldött mező viszont törli a tárolt értéket.
+- A dátumokat `2026-11-19`, `2026-11-19T08:30`, ISO vagy unix formátumban is elfogadja. Az időzóna nélküli dátumokat a bolt időzónájában értelmezi.
+
+---
 
 ## Konfiguráció (környezeti változók)
 
 | Változó | Alapérték | Leírás |
 |---|---|---|
-| `UNAS_API_KEY` | – (kötelező) | API kulcs |
-| `UNAS_SUBSCRIPTION` | `premium` | `premium` vagy `vip`. Csak tartalék: a limiteket a szerver a bejelentkezéskor kapott csomagból állítja be, ez az érték akkor számít, ha a csomag nem ismerhető fel |
+| `UNAS_API_KEY` | – (kötelező) | Az UNAS API kulcs |
 | `UNAS_READ_ONLY` | `false` | `true` esetén nem jelennek meg az író eszközök |
+| `UNAS_SUBSCRIPTION` | `premium` | `premium` vagy `vip`. Csak tartalék: a limiteket a szerver a bejelentkezéskor kapott előfizetésből állítja be |
 | `UNAS_TIMEZONE` | `Europe/Budapest` | Az időzóna nélküli dátumok értelmezéséhez |
 | `UNAS_RATE_SAFETY` | `0.9` | A dokumentált limit mekkora részét használhatja a szerver |
-| `UNAS_FAILURE_GUARD` | `15` | Ennyi egymás utáni hiba után áll le az adott végpont |
-| `UNAS_CACHE_TTL_SECONDS` | `600` | Cache idő a törzsadatokhoz |
+| `UNAS_FAILURE_GUARD` | `15` | Ennyi egymás utáni hiba után áll meg az adott végpont |
+| `UNAS_CACHE_TTL_SECONDS` | `600` | A törzsadatok cache ideje másodpercben |
 | `UNAS_TIMEOUT_MS` | `60000` | HTTP timeout |
 | `UNAS_MAX_OUTPUT_CHARS` | `80000` | Efölött az eszköz levágja a választ |
 | `UNAS_MAX_CONCURRENCY` | `4` | Párhuzamos kérések száma (1–5) |
 | `UNAS_BASE_URL` | `https://api.unas.eu/shop/` | Az API alap URL-je |
 | `UNAS_DOCS_DIR` | `~/.cache/unas-mcp` | A tudástár helyi másolatának mappája |
 
-## Fontos tudnivalók a limitekről
+---
 
-- Limitsértésnél a tiltás 1 óra, ismételt sértésnél egyre hosszabb (1 nap, 1 hónap, 1 év).
-- Éjfél körül (±10 perc) az UNAS karbantartást végezhet, ekkor ne fusson hívás.
-- A **listázó** lekérések szűkösek: getOrder, getProduct, getStock, getCategory és getCustomer esetén PREMIUM csomagban **30 hívás/óra**, VIP-ben 90. Az egyedi lekérések (Key, Id vagy egy SKU alapján) 1000, illetve 3000 hívás/óra.
-- Ezért jobb egy szűk időablakot egy nagyobb `limit` értékkel lekérni (getOrder esetén legfeljebb 500), mint sok kis oldalt lapozni.
-- A limitek **IP címre és boltra** vonatkoznak. Ha ugyanarról az IP-ről más integráció is hívja az API-t, azt a szerver nem látja.
+## Hibaelhárítás
 
-## Szerkezet
+| Jelenség | Megoldás |
+|---|---|
+| Nem jelennek meg az `unas_…` eszközök | Ellenőrizd, hogy az útvonal a `dist/index.js` fájlra mutat, és lefutott az `npm run build`. Indítsd újra a klienst. Claude Code-ban nézd meg a `/mcp` parancs kimenetét. |
+| `UNAS_API_KEY is required` | Nincs megadva az API kulcs az `env` részben. |
+| Azonosítási hiba | Rossz vagy lejárt a kulcs, vagy nincs jogosultsága az adott végponthoz. Nézd meg az UNAS adminban. Több hibás próbálkozás után a szerver 10 percig szünetel. |
+| `IP is banned till …` | Az UNAS letiltotta az IP-t. Várd ki a jelzett időt, és ne próbálkozz közben, mert a tiltás meghosszabbodhat. |
+| Nem lehet készletet módosítani | A terméken ki van kapcsolva a készletkezelés. Kapcsold be a `stockManaged: true` beállítással. |
+| Nem megy ki a státusz e-mail | Két dolognak kell bekapcsolva lennie: az adminban a **Beállítások → Vásárlási folyamat → Értesítések** alatt a „Megrendelés státusz módosítás” értesítésnek, és a státusznál az e-mail értesítésnek. |
+| Üres a tudástár keresés | Futtasd le az `npm run docs:sync` parancsot. |
+
+---
+
+## Fejlesztés
+
+```bash
+npm run dev       # futtatás TypeScriptből (tsx)
+npm test          # tesztek egy szimulált UNAS API ellen
+npm run build     # fordítás a dist/ mappába
+npm run inspect   # MCP Inspector
+```
 
 ```
 src/
   index.ts            stdio belépési pont
-  server.ts           tool/resource/prompt regisztráció, szerver utasítások
+  server.ts           eszközök, resource-ok és promptok regisztrációja, szerver utasítások
   config.ts           környezeti változók
-  unas/client.ts      login/token, HTTP, rate limit, hibavédelem, tiltás, cache
-  unas/xml.ts         XML <-> JSON (plural/singular listák normalizálása, CDATA)
-  unas/limits.ts      dokumentált limitek, végpontlista
-  tools/*.ts          eszközök domainenként
+  unas/client.ts      bejelentkezés, HTTP, rate limit, hibavédelem, tiltás, cache
+  unas/xml.ts         XML <-> JSON átalakítás
+  unas/limits.ts      a dokumentált limitek és a végpontlista
+  tools/*.ts          eszközök területenként (rendelés, termék, készlet, tartalom, SEO, tudástár…)
+  docs/               a tudástár letöltése, HTML → szöveg, keresés (BM25)
   util/               dátumok, összefoglalók, eredmény formázás
-test/server.test.ts   mock UNAS API + MCP kliens tesztek
+test/server.test.ts   szimulált UNAS API + MCP kliens tesztek
 ```
 
-Dokumentáció: https://unas.hu/tudastar/api
+Hibát vagy ötletet az [Issues](https://github.com/attisvalentin/unas-mcp/issues) oldalon jelezhetsz, és pull requestet is szívesen fogadok.
+
+Hivatalos UNAS API dokumentáció: https://unas.hu/tudastar/api
+
+---
+
+## Licenc
+
+[PolyForm Noncommercial 1.0.0](LICENSE). A forráskód nyilvános, és **nem kereskedelmi célra** szabadon használható, módosítható és továbbadható.
+
+- ✅ Szabad: saját célra, tanuláshoz, kutatáshoz, kipróbáláshoz, hobbi projektben, valamint nonprofit, oktatási vagy közintézményben.
+- ❌ Nem szabad külön engedély nélkül: kereskedelmi célra. Ide tartozik például a fizetős termékbe vagy szolgáltatásba építés, az ügynökségi munka ügyfeleknek, vagy a saját cég webáruházának üzemeltetése vele.
+
+Kereskedelmi licencért keress meg a GitHub profilomon keresztül.
+
+A licenc nem OSI-minősítésű, azaz a szó szoros értelmében nem „open source”, hanem *source-available*. A forrás nyílt, de a kereskedelmi felhasználás tiltott.
+
+A UNAS név és a tudástár tartalma az UNAS Online Kft. tulajdona.

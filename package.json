@@ -9,7 +9,8 @@
   "main": "dist/index.js",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=22"
@@ -28,7 +29,7 @@
     "webshop",
     "ecommerce"
   ],
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "fast-xml-parser": "^5.12.1",
@@ -38,5 +39,14 @@
     "@types/node": "^26.6.6",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "author": "Attila Valentin Németh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/attisvalentin/unas-mcp.git"
+  },
+  "homepage": "https://github.com/attisvalentin/unas-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/attisvalentin/unas-mcp/issues"
   }
 }
