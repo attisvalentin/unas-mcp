@@ -4,6 +4,7 @@ import type { UnasConfig } from "./config.js";
 import { UnasClient } from "./unas/client.js";
 import { KNOWN_ENDPOINTS, limitsMarkdown } from "./unas/limits.js";
 import { registerCatalogTools } from "./tools/catalog.js";
+import { registerContentTools } from "./tools/content.js";
 import type { ToolContext } from "./tools/context.js";
 import { registerOrderTools } from "./tools/orders.js";
 import { registerProductTools } from "./tools/products.js";
@@ -13,7 +14,9 @@ import { registerSystemTools } from "./tools/system.js";
 export const SERVER_NAME = "unas-mcp";
 export const SERVER_VERSION = "0.1.0";
 
-const INSTRUCTIONS = `Tools for a UNAS (unas.hu) webshop: orders, products, stock, categories, customers.
+const INSTRUCTIONS = `Tools for a UNAS (unas.hu) webshop: orders, products, stock, categories, customers, SEO, own pages
+and storefront scripts. The shop's design/theme (templates, CSS) cannot be edited through the API; a category can
+only be assigned an existing custom layout template ID.
 Key facts:
 - UNAS strictly rate limits LIST queries (e.g. 30/hour on PREMIUM) and bans the IP for 1 hour if exceeded,
   or after 20 consecutive failed calls. Single lookups (order by key, product/stock by one SKU) are cheap.
@@ -38,6 +41,7 @@ export function createServer(config: UnasConfig, client = new UnasClient(config)
   registerProductTools(ctx);
   registerStockTools(ctx);
   registerCatalogTools(ctx);
+  registerContentTools(ctx);
 
   // ---------------------------------------------------------------- resources
 

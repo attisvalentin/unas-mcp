@@ -55,6 +55,24 @@ function mockUnas(opts: { failWith?: (ep: string, n: number) => { status: number
       case "setOrder":
       case "setProduct":
         return new Response(xml(`<Products><Product><Sku>x</Sku><Status>ok</Status></Product></Products>`));
+      case "setCategory":
+        return new Response(xml(`<Categories><Category><Id>1</Id><Action>modify</Action><Status>ok</Status></Category></Categories>`));
+      case "getPage":
+        return new Response(
+          xml(`<Pages><Page><Id>500</Id><Name>Rólunk</Name><Type>landing</Type><Contents><Content><Id>700</Id></Content></Contents></Page></Pages>`)
+        );
+      case "setPage":
+        return new Response(xml(`<Pages><Page><Action>add</Action><Id>501</Id><Status>ok</Status></Page></Pages>`));
+      case "getPageContent":
+        return new Response(
+          xml(`<PageContents><PageContent><Id>700</Id><Title>T</Title><Pages><Page><Id>500</Id></Page></Pages></PageContent></PageContents>`)
+        );
+      case "setPageContent":
+        return new Response(xml(`<PageContents><PageContent><Action>add</Action><Id>701</Id><Status>ok</Status></PageContent></PageContents>`));
+      case "getScriptTag":
+        return new Response(xml(`<ScriptTags><ScriptTag><Id>9</Id><Title>GA</Title></ScriptTag></ScriptTags>`));
+      case "setScriptTag":
+        return new Response(xml(`<ScriptTags><ScriptTag><Id>9</Id><Status>ok</Status></ScriptTag></ScriptTags>`));
       default:
         return new Response(xml(`<Error>Unknown endpoint</Error>`), { status: 400 });
     }
@@ -111,7 +129,8 @@ test("tools are listed with annotations; read-only mode hides write tools", asyn
   const ro = await connect({ UNAS_READ_ONLY: "true" });
   const roNames = (await ro.client.listTools()).tools.map((t) => t.name);
   assert.ok(roNames.includes("unas_get_order"));
-  assert.ok(!roNames.some((n) => /update|set_stock|create|delete|raw_set/.test(n)));
+  assert.ok(!roNames.some((n) => /update|upsert|set_stock|create|delete|raw_set/.test(n)));
+  assert.ok(roNames.includes("unas_list_pages") && roNames.includes("unas_list_script_tags"));
 });
 
 test("list orders: summary, login reused, request params built correctly", async () => {
@@ -427,8 +446,100 @@ test("custom content type: requestedData is sent, and missing requestedData is r
     assert.match(r.text, /needs requestedData/);
   }
   assert.equal(mock.calls.length, before, "nothing may reach UNAS");
-  await call("unas_get_product", { sku: "t1", requestedData: ["Name", "Meta"] });
+  await call("unas_get_product", { sku: "t1", requestedData: "Meta" });
   const body = mock.calls.at(-1)!.body;
   assert.match(body, /<ContentType>custom<\/ContentType>/);
-  assert.match(body, /<RequestedData>Name,Meta<\/RequestedData>/);
+  assert.match(body, /<RequestedData>Meta<\/RequestedData>/);
+  // a list would come back empty from UNAS, so it is rejected before sending
+  const n = mock.calls.length;
+  assert.equal((await call("unas_get_product", { sku: "t1", requestedData: "Name,Meta" })).isError, true);
+  assert.equal(mock.calls.length, n);
+});
+
+test("product seo maps to Meta, SefUrl and Images.DefaultAlt; clash with extra is rejected", async () => {
+  const { call } = await connect();
+  const r = await call("unas_update_product", {
+    sku: "t1", seo: { title: "T", robots: "noindex, nofollow", url: "t-1", imageAlt: "Alt", description: "" }, dryRun: true,
+  });
+  const xml: string = r.json.xml;
+  assert.match(xml, /<SefUrl>t-1<\/SefUrl>/);
+  assert.match(xml, /<Meta>\s*<Title>T<\/Title>\s*<Description><\/Description>\s*<Robots>noindex, nofollow<\/Robots>/);
+  assert.match(xml, /<Images>\s*<DefaultAlt>Alt<\/DefaultAlt>\s*<\/Images>/);
+  const clash = await call("unas_update_product", { sku: "t1", seo: { title: "T" }, extra: { Meta: {} }, dryRun: true });
+  assert.equal(clash.isError, true);
+  assert.match(clash.text, /either through seo or through extra/);
+});
+
+test("update category: seo, texts, display and layout; lang inside the Category node; cache invalidated", async () => {
+  const { call, mock } = await connect();
+  await call("unas_list_categories", {});
+  const r = await call("unas_update_category", {
+    id: "10", lang: "hu", seo: { title: "Cipők" }, bottomText: "<p>SEO</p>", showInMenu: false,
+    pageLayout: { productList: "3" },
+  });
+  assert.equal(r.isError, false, r.text);
+  const body = mock.calls.at(-1)!.body;
+  assert.match(body, /<Category>\s*<Action>modify<\/Action>\s*<Id>10<\/Id>\s*<Lang>hu<\/Lang>/);
+  assert.match(body, /<Texts>\s*<Bottom><!\[CDATA\[<p>SEO<\/p>\]\]><\/Bottom>\s*<\/Texts>/);
+  assert.match(body, /<Display>\s*<Menu>no<\/Menu>\s*<\/Display>/);
+  assert.match(body, /<PageLayout>\s*<ProductList>3<\/ProductList>\s*<\/PageLayout>/);
+  await call("unas_list_categories", {});
+  assert.equal(mock.calls.filter((c) => c.endpoint === "getCategory").length, 2, "cache was invalidated");
+});
+
+test("upsert page: new page is created with its new content already attached (one setPage call)", async () => {
+  const { call, mock } = await connect();
+  const r = await call("unas_upsert_page", {
+    name: "Szállítás", seo: { url: "szallitas" }, content: { title: "Szállítási infó", html: "<p>Hi</p>" },
+  });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json, { ok: true, pageId: "501", contentId: "701", createdPage: true, createdContent: true });
+  const eps = mock.calls.map((c) => c.endpoint).filter((e) => e !== "login");
+  assert.deepEqual(eps, ["setPageContent", "setPage"]);
+  const page = mock.calls.at(-1)!.body;
+  assert.match(page, /<Action>add<\/Action>/);
+  assert.match(page, /<Menu>no<\/Menu>/);
+  assert.match(page, /<Type>normal<\/Type>/);
+  assert.match(page, /<Contents>\s*<Content>\s*<Id>701<\/Id>/);
+});
+
+test("upsert page: modify reads Type and keeps existing contents when attaching a new one", async () => {
+  const { call, mock } = await connect();
+  const r = await call("unas_upsert_page", { id: "500", content: { title: "Új blokk", html: "<p>x</p>" } });
+  assert.equal(r.isError, false, r.text);
+  const page = mock.calls.at(-1)!.body;
+  assert.match(page, /<Action>modify<\/Action>\s*<Id>500<\/Id>/);
+  assert.match(page, /<Type>landing<\/Type>/);
+  assert.match(page, /<Content>\s*<Id>700<\/Id>\s*<\/Content>\s*<Content>\s*<Id>701<\/Id>/);
+  // modifying only an existing content item does not touch the page at all
+  const before = mock.calls.length;
+  await call("unas_upsert_page", { id: "500", content: { id: "700", html: "<p>y</p>" } });
+  assert.deepEqual(mock.calls.slice(before).map((c) => c.endpoint), ["setPageContent"]);
+});
+
+test("delete page keeps content items that other pages still use", async () => {
+  const mock = mockUnas();
+  const { call } = await connect({}, mock);
+  // content 700 belongs only to page 500 in the mock, so it is deleted together with the page
+  const r = await call("unas_delete_page", { id: "500", deleteContents: true, confirm: true, dryRun: true });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.keptContents, []);
+  assert.match(r.json.steps[1].xml, /<Action>delete<\/Action>\s*<Id>700<\/Id>/);
+});
+
+test("script tag: new scripts start inactive, required fields and page filter are checked", async () => {
+  const { call, mock } = await connect();
+  assert.equal((await call("unas_upsert_script_tag", { title: "x" })).isError, true);
+  assert.equal(
+    (await call("unas_upsert_script_tag", { title: "x", type: "head", content: "1", pages: ["cart"] })).isError,
+    true
+  );
+  const r = await call("unas_upsert_script_tag", {
+    title: "Konverzió", type: "body_end", content: "console.log(1)", pages: ["order_send"], pageFilter: "allow",
+  });
+  assert.equal(r.isError, false, r.text);
+  const body = mock.calls.at(-1)!.body;
+  assert.match(body, /<Action>add<\/Action>\s*<Status>inactive<\/Status>/);
+  assert.match(body, /<Pages>\s*<Page>\s*<Id>order_send<\/Id>/);
+  assert.match(body, /<PageFilterType>allow<\/PageFilterType>/);
 });

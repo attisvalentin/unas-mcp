@@ -2,9 +2,23 @@ import { z } from "zod";
 import { asArray, buildXml, compact, type XmlObject } from "../unas/xml.js";
 import { jsonResult, safe, setResult } from "../util/result.js";
 import { summarizeProduct } from "../util/summaries.js";
+import { checkSeoOverlap, productSeoInput, seoNodes, type SeoInput } from "./seo.js";
 import { dateInput, DESTRUCTIVE, dryRunInput, READ_ONLY, unixOrUndefined, WRITE, type ToolContext } from "./context.js";
 
 const CONTENT_TYPES = ["minimal", "short", "normal", "full", "custom"] as const;
+
+/**
+ * UNAS returns exactly one first-level field with ContentType=custom: a comma separated list comes back empty and
+ * repeated elements return only the last one (verified against a live shop).
+ */
+const requestedDataInput = z
+  .string()
+  .regex(/^[A-Za-z]+$/, "exactly one field name, e.g. Prices (UNAS returns only one field per custom request)")
+  .describe(
+    "Return only this one first-level Product field, e.g. \"Prices\", \"Meta\", \"Images\", \"Stock\" (sets " +
+      "contentType=custom). UNAS supports exactly one field per request; for more fields use contentType normal/full."
+  );
+const CUSTOM_NEEDS_FIELD = "contentType=custom needs requestedData (one field name, e.g. \"Prices\").";
 const PRODUCT_STATUS = z
   .enum(["0", "1", "2", "3"])
   .describe("0 = inactive, 1 = active, 2 = active & new, 3 = active but not buyable");
@@ -101,9 +115,12 @@ function productNodes(a: {
   categoryName?: string;
   shortDescription?: string;
   longDescription?: string;
+  seo?: SeoInput;
   extra?: Record<string, unknown>;
 }): XmlObject {
   checkExtra(a.extra);
+  const seo = seoNodes(a.seo);
+  checkSeoOverlap(seo, a.extra);
   const price = completePrice(a.price, a.vat);
   return compact({
     Statuses: a.status !== undefined ? { Status: [{ Type: "base", Value: a.status }] } : undefined,
@@ -125,6 +142,7 @@ function productNodes(a: {
           }
         : undefined,
     Stocks: a.stockManaged !== undefined ? { Status: { Active: a.stockManaged ? "1" : "0" } } : undefined,
+    ...seo,
     ...((a.extra ?? {}) as XmlObject),
   });
 }
@@ -149,10 +167,7 @@ export function registerProductTools(ctx: ToolContext) {
         modifiedFrom: dateInput.optional(),
         modifiedTo: dateInput.optional(),
         contentType: z.enum(CONTENT_TYPES).default("short").describe("Amount of data per product"),
-        requestedData: z
-          .array(z.string())
-          .optional()
-          .describe("With contentType=custom: first-level Product fields to return, e.g. [\"Name\",\"Prices\",\"Stock\"]"),
+        requestedData: requestedDataInput.optional(),
         lang: z.string().length(2).optional().describe("ISO 639-1 language code, e.g. hu, en, de"),
         limit: z.number().int().min(1).max(1000).default(100),
         offset: z.number().int().min(0).optional(),
@@ -162,9 +177,7 @@ export function registerProductTools(ctx: ToolContext) {
     },
     safe(async (a) => {
       // Checked locally: UNAS rejects it anyway, and a rejected list call still burns the scarce bulk budget.
-      if (a.contentType === "custom" && !a.requestedData?.length) {
-        throw new Error("contentType=custom needs requestedData, e.g. [\"Name\",\"Prices\"].");
-      }
+      if (a.contentType === "custom" && !a.requestedData) throw new Error(CUSTOM_NEEDS_FIELD);
       const params = compact({
         StatusBase: a.statuses?.join(","),
         State: a.state,
@@ -173,8 +186,8 @@ export function registerProductTools(ctx: ToolContext) {
         CategoryId: a.categoryIds?.join(","),
         TimeStart: unixOrUndefined(ctx, a.modifiedFrom),
         TimeEnd: unixOrUndefined(ctx, a.modifiedTo, true),
-        ContentType: a.requestedData?.length ? "custom" : a.contentType,
-        RequestedData: a.requestedData?.join(","),
+        ContentType: a.requestedData ? "custom" : a.contentType,
+        RequestedData: a.requestedData,
         Lang: a.lang,
         LimitNum: a.limit,
         LimitStart: a.offset,
@@ -203,10 +216,7 @@ export function registerProductTools(ctx: ToolContext) {
         sku: z.string().optional(),
         id: z.string().optional().describe("UNAS product ID (takes precedence over sku)"),
         contentType: z.enum(CONTENT_TYPES).default("full"),
-        requestedData: z
-          .array(z.string())
-          .optional()
-          .describe("Only these first-level Product fields, e.g. [\"Name\",\"Prices\",\"Meta\"] (sets contentType=custom)"),
+        requestedData: requestedDataInput.optional(),
         lang: z.string().length(2).optional(),
         detail: z.enum(["summary", "full"]).default("full"),
       },
@@ -214,10 +224,8 @@ export function registerProductTools(ctx: ToolContext) {
     },
     safe(async (a) => {
       if (!a.sku && !a.id) throw new Error("Provide sku or id.");
-      const custom = !!a.requestedData?.length;
-      if (a.contentType === "custom" && !custom) {
-        throw new Error("contentType=custom needs requestedData, e.g. [\"Name\",\"Prices\"].");
-      }
+      const custom = !!a.requestedData;
+      if (a.contentType === "custom" && !custom) throw new Error(CUSTOM_NEEDS_FIELD);
       const doc = await client.call(
         "getProduct",
         "Params",
@@ -225,7 +233,7 @@ export function registerProductTools(ctx: ToolContext) {
           Id: a.id,
           Sku: a.id ? undefined : a.sku,
           ContentType: custom ? "custom" : a.contentType,
-          RequestedData: custom ? a.requestedData!.join(",") : undefined,
+          RequestedData: a.requestedData,
           Lang: a.lang,
         }),
         { kind: "single" }
@@ -243,7 +251,8 @@ export function registerProductTools(ctx: ToolContext) {
     {
       title: "Update product",
       description:
-        "Modify an existing product identified by SKU. Only provided fields are changed. For stock changes use " +
+        "Modify an existing product identified by SKU. Only provided fields are changed (seo: meta title/description/" +
+        "keywords/robots, SEO URL, image ALT). For stock changes use " +
         "unas_set_stock instead. Use lang to update a translation (only translatable fields apply). Use dryRun to preview.",
       inputSchema: {
         sku: z.string().min(1),
@@ -253,6 +262,7 @@ export function registerProductTools(ctx: ToolContext) {
         price: priceInput.optional(),
         vat: vatInput.optional(),
         stockManaged: stockManagedInput.optional(),
+        seo: productSeoInput.optional(),
         categoryId: z.string().optional().describe("New base category ID"),
         shortDescription: z.string().optional(),
         longDescription: z.string().optional().describe("HTML allowed"),
@@ -290,6 +300,7 @@ export function registerProductTools(ctx: ToolContext) {
         price: priceInput,
         vat: vatInput.optional(),
         stockManaged: stockManagedInput.optional(),
+        seo: productSeoInput.optional(),
         categoryId: z.string().optional().describe("Existing category ID"),
         categoryName: z
           .string()

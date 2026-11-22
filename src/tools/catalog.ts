@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { asArray, compact, type XmlObject } from "../unas/xml.js";
-import { jsonResult, safe } from "../util/result.js";
-import { dateInput, READ_ONLY, unixOrUndefined, type ToolContext } from "./context.js";
+import { asArray, buildXml, compact, type XmlObject } from "../unas/xml.js";
+import { jsonResult, safe, setResult } from "../util/result.js";
+import { dateInput, dryRunInput, READ_ONLY, unixOrUndefined, WRITE, type ToolContext } from "./context.js";
+import { checkSeoOverlap, seoInput, seoNodes } from "./seo.js";
 
 export function registerCatalogTools(ctx: ToolContext) {
   const { server, client, config } = ctx;
@@ -98,6 +99,74 @@ export function registerCatalogTools(ctx: ToolContext) {
     safe(async () => {
       const doc = await client.call("getMethod", "Params", {}, { kind: "bulk", cacheTtlMs: config.cacheTtlMs });
       return jsonResult(doc, config.maxOutputChars);
+    })
+  );
+
+  if (config.readOnly) return;
+
+  const yesNo = (v: boolean | undefined) => (v === undefined ? undefined : v ? "yes" : "no");
+
+  server.registerTool(
+    "unas_update_category",
+    {
+      title: "Update category",
+      description:
+        "Modify an existing category by ID: name, SEO (meta title/description/keywords/robots, SEO URL), texts above/" +
+        "below the product list, menu/page visibility, parent, and custom page layout templates. Only provided " +
+        "fields change; an empty string clears a text. Layout templates themselves are made in the UNAS admin; here " +
+        "you can only assign an existing template ID. Use dryRun to preview.",
+      inputSchema: {
+        id: z.string().min(1).describe("Category ID (see unas_list_categories)"),
+        name: z.string().optional(),
+        nameOnPage: z.string().optional().describe("Heading shown on the category page, if different from name"),
+        seo: seoInput.optional(),
+        topText: z.string().optional().describe("HTML shown above the product list (UNAS: Texts.Top)"),
+        bottomText: z.string().optional().describe("HTML shown below the product list, e.g. SEO text (UNAS: Texts.Bottom)"),
+        menuText: z.string().optional().describe("Text shown in the category menu (UNAS: Texts.Menu)"),
+        showInMenu: z.boolean().optional(),
+        showOnPage: z.boolean().optional().describe("Show the category on category listing pages"),
+        parentId: z.string().optional().describe("Move under this parent category ID (\"0\" = top level)"),
+        pageLayout: z
+          .object({
+            productList: z.string().optional().describe("Custom template ID for the product list page"),
+            categoryList: z.string().optional().describe("Custom template ID for the category page"),
+          })
+          .optional()
+          .describe("Assign custom page layout templates created in the UNAS admin. Empty string = default layout."),
+        lang: z.string().length(2).optional().describe("Update this language's translatable fields"),
+        extra: z
+          .record(z.string(), z.any())
+          .optional()
+          .describe("Advanced: additional raw UNAS <Category> child nodes (see the UNAS category data structure)"),
+        dryRun: dryRunInput,
+      },
+      annotations: { title: "Update category", ...WRITE },
+    },
+    safe(async (a) => {
+      const bad = Object.keys(a.extra ?? {}).filter((k) => ["action", "id", "lang"].includes(k.toLowerCase()));
+      if (bad.length > 0) throw new Error(`extra must not contain ${bad.join(", ")}.`);
+      const seo = seoNodes(a.seo);
+      checkSeoOverlap(seo, a.extra);
+      const nodes = compact({
+        Name: a.name,
+        NameOnPage: a.nameOnPage,
+        ...seo,
+        Texts: { Top: a.topText, Bottom: a.bottomText, Menu: a.menuText },
+        Display: { Page: yesNo(a.showOnPage), Menu: yesNo(a.showInMenu) },
+        Parent: a.parentId !== undefined ? { Id: a.parentId } : undefined,
+        PageLayout: a.pageLayout
+          ? { ProductList: a.pageLayout.productList, CategoryList: a.pageLayout.categoryList }
+          : undefined,
+        ...((a.extra ?? {}) as XmlObject),
+      });
+      if (Object.keys(nodes).length === 0) throw new Error("Nothing to update: provide at least one field besides id.");
+      const body = { Category: [compact({ Action: "modify", Id: a.id, Lang: a.lang, ...nodes })] };
+      if (a.dryRun) {
+        return jsonResult({ dryRun: true, endpoint: "setCategory", xml: buildXml("Categories", body) }, config.maxOutputChars);
+      }
+      const doc = await client.call("setCategory", "Categories", body, { kind: "single" });
+      client.invalidateCache("getCategory");
+      return setResult(doc, config.maxOutputChars);
     })
   );
 }

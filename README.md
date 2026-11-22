@@ -27,13 +27,19 @@ Az UNAS API XML-alapú, és a limitjei szigorúak. Ha egy listázó hívást tú
 | `unas_list_order_statuses` | A boltban beállított rendelés státuszok |
 | `unas_update_order` ✎ | Státusz és értesítő e-mail, csomagszám, követési URL, számla adatok, admin megjegyzés |
 | `unas_list_products` / `unas_get_product` | Termékek keresése és lekérése (SKU, kategória, státusz, módosítás alapján) |
-| `unas_update_product` ✎ / `unas_create_product` ✎ | Név, ár, ÁFA-kulcs (`vat`, a hiányzó nettó/bruttó árat kiszámolja), készletkezelés (`stockManaged`), státusz, kategória, leírás, plusz bármilyen nyers mező az `extra` paraméterben |
+| `unas_update_product` ✎ / `unas_create_product` ✎ | Név, ár, ÁFA-kulcs (`vat`, a hiányzó nettó/bruttó árat kiszámolja), készletkezelés (`stockManaged`), SEO (`seo`: meta cím, leírás, kulcsszavak, robots, SEO URL, kép ALT), státusz, kategória, leírás, plusz bármilyen nyers mező az `extra` paraméterben |
 | `unas_delete_products` ⚠ | Termékek törlése (`confirm: true` kell hozzá) |
 | `unas_get_stock` / `unas_set_stock` ✎ | Készlet lekérdezése és módosítása (`modify`/`in`/`out`, változatok, további raktárak). A 100-nál nagyobb kéréseket automatikusan feldarabolja. |
 | `unas_list_categories`, `unas_list_customers`, `unas_list_methods` | Kategóriák, vásárlók, fizetési és szállítási módok |
+| `unas_update_category` ✎ | Kategória neve, SEO, a lista feletti/alatti szöveg, menü- és oldalmegjelenés, szülő, egyedi kinézet sablon (`pageLayout`) |
+| `unas_list_pages` / `unas_get_page` | Saját oldalak és menüpontok, a `get_page` a HTML tartalmakkal együtt |
+| `unas_upsert_page` ✎ / `unas_delete_page` ⚠ | Oldal létrehozása vagy módosítása tartalommal és SEO-val; törlés a csak ehhez tartozó tartalmakkal. A `getPage`/`setPage` óránként csak 30 hívást enged (PREMIUM). |
+| `unas_list_script_tags`, `unas_upsert_script_tag` ✎ / `unas_delete_script_tag` ⚠ | Egyedi scriptek (követő- és konverziós kódok) a head/body részbe, oldaltípus és nyelv szerinti szűréssel. Az új script inaktívan jön létre. |
 | `unas_raw_get` / `unas_raw_set` ⚠ | Bármely más végpont (kupon, termékparaméter, vásárlócsoport, raktár, matrica, oldal, beállítás…) |
 
 A ✎ és ⚠ jelű eszközök read-only módban nem jelennek meg.
+
+A bolt sablonja, CSS-e és designja API-n keresztül nem szerkeszthető; kategóriához csak egy, az adminban már elkészített egyedi sablon rendelhető.
 
 **Resource-ok:** `unas://limits` (a limitek táblázata), `unas://endpoints`
 **Promptok:** `daily_order_report`, `customer_lookup`, `stock_check`
